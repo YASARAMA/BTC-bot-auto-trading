@@ -35,7 +35,7 @@
     if (b.dataset.tab === 'trades') loadTrades();
     if (b.dataset.tab === 'settings') loadSettings();
     if (b.dataset.tab === 'backtest') loadSamples();
-    if (b.dataset.tab === 'chart') loadChart(); else disconnectStream();
+    if (b.dataset.tab === 'chart') loadChart();
   }));
 
   // ----- chart -----
@@ -144,6 +144,7 @@
       renderStatus(s);
       const v = (s.cycles || 0) + ':' + (s.state);
       if (v !== equityVersion) { equityVersion = v; loadEquity(); }
+      ensureStream();
     } catch (e) { $('state-text').textContent = `disconnected: ${e.message}`; $('state-dot').className = 'dot error'; }
     try {
       const { events } = await api(`/api/events?since=${lastEventId}&limit=300`);
@@ -317,7 +318,8 @@
 
   // ----- price chart -----
   const C = { up: '#0ca30c', down: '#d03b3b', emaFast: '#3987e5', emaSlow: '#d95926', grid: '#273241', text: '#8b98a8', last: '#e6edf3', stop: '#d03b3b', tp: '#0ca30c', entry: '#3987e5' };
-  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null, live: null, ws: null, wsKey: null, wsRetry: 0, lastDraw: 0 };
+  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null, live: null, wsClosed: {}, ws: null, wsKey: null, wsRetry: 0, lastDraw: 0, lastMsg: 0 };
+  window.__btcbot = { chart };
   const chartActive = () => document.querySelector('#tab-chart').classList.contains('active');
   async function loadChart() {
     try {
@@ -328,7 +330,9 @@
       const src = { feed: 'live feed from the running bot', replay: 'demo replay data', exchange: 'public data, bot stopped' }[d.source] || d.source;
       $('chart-title').textContent = `${d.exchange} · ${d.symbol} · ${d.timeframe}`;
       $('chart-source').textContent = `${src} · ${d.candles.length} candles · updated ${new Date(d.now).toLocaleTimeString()}`;
-      if (chart.live && d.candles.length && chart.live.t <= d.candles[d.candles.length - 1][0]) chart.live = null; // now closed
+      const lastTs = d.candles.length ? d.candles[d.candles.length - 1][0] : 0;
+      if (chart.live && chart.live.t <= lastTs) chart.live = null; // the API now carries it
+      Object.keys(chart.wsClosed).forEach((t) => { if (Number(t) <= lastTs) delete chart.wsClosed[t]; });
       renderChart();
       connectStream(d);
     } catch (e) {
@@ -341,7 +345,10 @@
     canvas.width = w * dpr; canvas.height = h * dpr; const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
     const showVol = $('chart-vol').checked, showEma = $('chart-ema').checked, showTrades = $('chart-trades').checked;
     const n = d.candles.length, start = Math.max(0, n - chart.visible), rows = d.candles.slice(start);
-    const live = chart.live && (!n || chart.live.t > d.candles[n - 1][0]) ? chart.live : null;
+    const lastApiTs = n ? d.candles[n - 1][0] : 0;
+    Object.values(chart.wsClosed).filter((k) => k.t > lastApiTs).sort((a, b) => a.t - b.t).forEach((k) => rows.push([k.t, k.o, k.h, k.l, k.c, k.v]));
+    const lastRowTs = rows.length ? rows[rows.length - 1][0] : 0;
+    const live = chart.live && chart.live.t > lastRowTs ? chart.live : null;
     if (live) rows.push([live.t, live.o, live.h, live.l, live.c, live.v, true]);
     const liveIdx = live ? rows.length - 1 : -1;
     const pad = { l: 8, r: 74, t: 10, b: 22 }; const volH = showVol ? 80 : 0;
@@ -428,7 +435,8 @@
   // ----- realtime stream (Binance public WebSocket, no keys) -----
   const BINANCE_WS = 'wss://stream.binance.com:9443/ws/';
   function streamKey(d) { return d.exchange === 'binance' ? `${d.symbol.replace('/', '').split(':')[0].toLowerCase()}@kline_${d.timeframe}` : null; }
-  function setLiveBadge(state) { const b = $('chart-live'); b.classList.toggle('hidden', state === 'off'); b.classList.toggle('reconnecting', state === 'reconnecting'); b.textContent = state === 'reconnecting' ? '● reconnecting' : '● LIVE'; }
+  function setLiveBadge(state) { const b = $('chart-live'); b.classList.toggle('hidden', state === 'off'); b.classList.toggle('reconnecting', state === 'reconnecting'); b.textContent = state === 'reconnecting' ? '● reconnecting' : `● LIVE${chart.lastMsg ? ' ' + new Date(chart.lastMsg).toLocaleTimeString() : ''}`; }
+  function ensureStream() { const c = status.config || {}; if (c.exchange && c.symbol && c.timeframe && !(chart.ws && chart.ws.readyState <= 1)) connectStream({ exchange: c.exchange, symbol: c.symbol, timeframe: c.timeframe }); }
   function connectStream(d) {
     const key = streamKey(d);
     if (!key || !window.WebSocket) { disconnectStream(); return; }
@@ -442,12 +450,14 @@
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       const k = m.k; if (!k) return;
-      chart.live = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, closed: !!k.x };
+      const candle = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, closed: !!k.x };
+      chart.lastMsg = Date.now();
+      if (k.x) { chart.wsClosed[k.t] = candle; if (chart.live && chart.live.t === k.t) chart.live = null; setTimeout(loadChart, 1500); setTimeout(loadChart, 12000); } // closed: keep it, then fetch it with indicators
+      else chart.live = candle;
       $('t-price').textContent = fmt.money(+k.c);
-      if (k.x) setTimeout(loadChart, 1500); // candle closed: fetch it with indicators from the bot
-      const now = performance.now(); if (now - chart.lastDraw > 250 && chartActive()) { chart.lastDraw = now; renderChart(); }
+      if (chartActive()) { setLiveBadge('on'); const now = performance.now(); if (now - chart.lastDraw > 250) { chart.lastDraw = now; renderChart(); } }
     };
-    ws.onclose = () => { if (chart.ws !== ws) return; chart.ws = null; if (!chartActive()) { setLiveBadge('off'); return; } setLiveBadge('reconnecting'); const delay = Math.min(30000, 1000 * Math.pow(2, chart.wsRetry++)); setTimeout(() => { if (chartActive() && chart.data) connectStream(chart.data); }, delay); };
+    ws.onclose = () => { if (chart.ws !== ws) return; chart.ws = null; setLiveBadge('reconnecting'); const delay = Math.min(30000, 1000 * Math.pow(2, chart.wsRetry++)); setTimeout(() => connectStream(d), delay); };
     ws.onerror = () => { try { ws.close(); } catch (e) { /* ignore */ } };
   }
   function disconnectStream() { if (chart.ws) { const ws = chart.ws; chart.ws = null; try { ws.close(); } catch (e) { /* ignore */ } } chart.wsKey = null; setLiveBadge('off'); }
