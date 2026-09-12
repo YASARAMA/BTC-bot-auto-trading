@@ -121,3 +121,5 @@ dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 1
 .tv-wrap { height: 560px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-top: 8px; }
 .tv-wrap iframe { width: 100%; height: 100%; border: 0; }
 button.ghost.on { border-color: var(--accent); color: var(--accent); }
+.live-badge { color: #0ca30c; border-color: #0ca30c; }
+.live-badge.reconnecting { color: var(--amber); border-color: var(--amber); }

@@ -35,7 +35,7 @@
     if (b.dataset.tab === 'trades') loadTrades();
     if (b.dataset.tab === 'settings') loadSettings();
     if (b.dataset.tab === 'backtest') loadSamples();
-    if (b.dataset.tab === 'chart') loadChart();
+    if (b.dataset.tab === 'chart') loadChart(); else disconnectStream();
   }));
 
   // ----- chart -----
@@ -317,7 +317,7 @@
 
   // ----- price chart -----
   const C = { up: '#0ca30c', down: '#d03b3b', emaFast: '#3987e5', emaSlow: '#d95926', grid: '#273241', text: '#8b98a8', last: '#e6edf3', stop: '#d03b3b', tp: '#0ca30c', entry: '#3987e5' };
-  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null };
+  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null, live: null, ws: null, wsKey: null, wsRetry: 0, lastDraw: 0 };
   const chartActive = () => document.querySelector('#tab-chart').classList.contains('active');
   async function loadChart() {
     try {
@@ -328,7 +328,9 @@
       const src = { feed: 'live feed from the running bot', replay: 'demo replay data', exchange: 'public data, bot stopped' }[d.source] || d.source;
       $('chart-title').textContent = `${d.exchange} · ${d.symbol} · ${d.timeframe}`;
       $('chart-source').textContent = `${src} · ${d.candles.length} candles · updated ${new Date(d.now).toLocaleTimeString()}`;
+      if (chart.live && d.candles.length && chart.live.t <= d.candles[d.candles.length - 1][0]) chart.live = null; // now closed
       renderChart();
+      connectStream(d);
     } catch (e) {
       $('chart-empty').classList.remove('hidden'); $('chart-empty').textContent = `Could not load candles: ${e.message}`;
     }
@@ -339,12 +341,16 @@
     canvas.width = w * dpr; canvas.height = h * dpr; const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
     const showVol = $('chart-vol').checked, showEma = $('chart-ema').checked, showTrades = $('chart-trades').checked;
     const n = d.candles.length, start = Math.max(0, n - chart.visible), rows = d.candles.slice(start);
+    const live = chart.live && (!n || chart.live.t > d.candles[n - 1][0]) ? chart.live : null;
+    if (live) rows.push([live.t, live.o, live.h, live.l, live.c, live.v, true]);
+    const liveIdx = live ? rows.length - 1 : -1;
     const pad = { l: 8, r: 74, t: 10, b: 22 }; const volH = showVol ? 80 : 0;
     const priceTop = pad.t, priceBot = h - pad.b - volH - (showVol ? 8 : 0), volTop = priceBot + 8, volBot = h - pad.b;
     const plotW = w - pad.l - pad.r, slot = plotW / rows.length, bodyW = Math.max(1, Math.min(14, slot * 0.68));
     let lo = Infinity, hi = -Infinity, vmax = 0;
     rows.forEach((r) => { lo = Math.min(lo, r[3]); hi = Math.max(hi, r[2]); vmax = Math.max(vmax, r[5] || 0); });
     const pos = d.position; if (pos) { [pos.stop_loss, pos.take_profit, pos.entry_price].forEach((v) => { if (v) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }); }
+    if (live) d.last_price = live.c;
     if (d.last_price) { lo = Math.min(lo, d.last_price); hi = Math.max(hi, d.last_price); }
     const span = (hi - lo) || 1; lo -= span * 0.05; hi += span * 0.05;
     const X = (i) => pad.l + (i + 0.5) * slot, Y = (p) => priceTop + (1 - (p - lo) / (hi - lo)) * (priceBot - priceTop);
@@ -364,18 +370,20 @@
     // candles: up = hollow, down = filled (polarity is not color-alone)
     rows.forEach((r, i) => {
       const [ts, o, hh, ll, c] = r; const up = c >= o; const x = X(i); const col = up ? C.up : C.down;
-      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+      ctx.globalAlpha = i === liveIdx ? 0.55 : 1; ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x, Y(hh)); ctx.lineTo(x, Y(Math.max(o, c))); ctx.moveTo(x, Y(Math.min(o, c))); ctx.lineTo(x, Y(ll)); ctx.stroke();
       const top = Y(Math.max(o, c)), bh = Math.max(1, Y(Math.min(o, c)) - top);
       if (up) { ctx.lineWidth = 1.5; ctx.strokeRect(x - bodyW / 2, top, bodyW, bh); } else ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
+      ctx.globalAlpha = 1;
     });
+    if (live) { ctx.fillStyle = C.text; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('forming', X(liveIdx), Y(live.h) - 4); ctx.font = '11px system-ui'; }
     // EMA lines
     const line = (arr, color) => { if (!arr) return; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); let started = false; rows.forEach((r, i) => { const v = arr[start + i]; if (v == null) return; const x = X(i), y = Y(v); started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true; }); ctx.stroke(); };
     if (showEma && d.indicators) { line(d.indicators.ema_fast, C.emaFast); line(d.indicators.ema_slow, C.emaSlow); }
     // horizontal levels: position + last price
     const level = (p, color, label, dash) => { if (!p) return; const y = Y(p); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash(dash); ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = color; ctx.fillRect(w - pad.r + 1, y - 8, pad.r - 2, 16); ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = 'bold 11px system-ui'; ctx.fillText(label, w - pad.r + 5, y); ctx.font = '11px system-ui'; };
     if (pos) { level(pos.stop_loss, C.stop, `SL ${fmt.money(pos.stop_loss, 0)}`, [5, 4]); level(pos.take_profit, C.tp, `TP ${fmt.money(pos.take_profit, 0)}`, [5, 4]); level(pos.entry_price, C.entry, `IN ${fmt.money(pos.entry_price, 0)}`, []); }
-    if (d.last_price) level(d.last_price, '#4b5563', fmt.money(d.last_price, 0), [2, 3]);
+    if (d.last_price) { const prev = n ? d.candles[n - 1][4] : d.last_price; level(d.last_price, live ? (d.last_price >= prev ? '#0a7a0a' : '#9e2b2b') : '#4b5563', fmt.money(d.last_price, 0), [2, 3]); }
     // trade markers (shape + label, color for P/L sign)
     if (showTrades) {
       const idxFor = (ts) => { let k = -1; for (let i = 0; i < rows.length; i++) { if (rows[i][0] <= ts) k = i; else break; } return k; };
@@ -415,6 +423,33 @@
     }
   });
   function chartTick() { if (chartActive()) loadChart(); }
+
+  // ----- realtime stream (Binance public WebSocket, no keys) -----
+  const BINANCE_WS = 'wss://stream.binance.com:9443/ws/';
+  function streamKey(d) { return d.exchange === 'binance' ? `${d.symbol.replace('/', '').split(':')[0].toLowerCase()}@kline_${d.timeframe}` : null; }
+  function setLiveBadge(state) { const b = $('chart-live'); b.classList.toggle('hidden', state === 'off'); b.classList.toggle('reconnecting', state === 'reconnecting'); b.textContent = state === 'reconnecting' ? '● reconnecting' : '● LIVE'; }
+  function connectStream(d) {
+    const key = streamKey(d);
+    if (!key || !window.WebSocket) { disconnectStream(); return; }
+    if (chart.ws && chart.wsKey === key && chart.ws.readyState <= 1) return;
+    disconnectStream();
+    chart.wsKey = key;
+    let ws;
+    try { ws = new WebSocket(BINANCE_WS + key); } catch (e) { setLiveBadge('off'); return; }
+    chart.ws = ws;
+    ws.onopen = () => { chart.wsRetry = 0; setLiveBadge('on'); };
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      const k = m.k; if (!k) return;
+      chart.live = { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v, closed: !!k.x };
+      $('t-price').textContent = fmt.money(+k.c);
+      if (k.x) setTimeout(loadChart, 1500); // candle closed: fetch it with indicators from the bot
+      const now = performance.now(); if (now - chart.lastDraw > 250 && chartActive()) { chart.lastDraw = now; renderChart(); }
+    };
+    ws.onclose = () => { if (chart.ws !== ws) return; chart.ws = null; if (!chartActive()) { setLiveBadge('off'); return; } setLiveBadge('reconnecting'); const delay = Math.min(30000, 1000 * Math.pow(2, chart.wsRetry++)); setTimeout(() => { if (chartActive() && chart.data) connectStream(chart.data); }, delay); };
+    ws.onerror = () => { try { ws.close(); } catch (e) { /* ignore */ } };
+  }
+  function disconnectStream() { if (chart.ws) { const ws = chart.ws; chart.ws = null; try { ws.close(); } catch (e) { /* ignore */ } } chart.wsKey = null; setLiveBadge('off'); }
 
   // ----- boot -----
   poll(); setInterval(poll, 2000); setInterval(chartTick, 10000);

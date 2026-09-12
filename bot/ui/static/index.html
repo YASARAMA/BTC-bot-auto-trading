@@ -89,7 +89,7 @@
   <section id="tab-chart" class="tab">
     <div class="card">
       <div class="chart-toolbar">
-        <div class="card-title" style="margin:0"><span id="chart-title">Price chart</span> <span class="muted small" id="chart-source"></span></div>
+        <div class="card-title" style="margin:0"><span id="chart-title">Price chart</span> <span class="muted small" id="chart-source"></span> <span class="badge live-badge hidden" id="chart-live">● LIVE</span></div>
         <label class="inline">candles
           <select id="chart-limit"><option>100</option><option selected>200</option><option>300</option><option>500</option><option>1000</option></select>
         </label>
@@ -114,7 +114,7 @@
         <div class="muted small chart-empty" id="chart-empty">Loading candles…</div>
       </div>
       <div class="tv-wrap hidden" id="tv-wrap"></div>
-      <div class="muted small" id="chart-note">Candles come from the exchange configured in Settings (Binance by default): the running bot's own candle window, or a fresh public fetch when the bot is stopped. Scroll on the chart to zoom.</div>
+      <div class="muted small" id="chart-note">Closed candles come from the exchange configured in Settings (Binance by default). On Binance the chart also connects to the public WebSocket stream, so the forming candle and the price update every second. Scroll on the chart to zoom.</div>
     </div>
   </section>
 
