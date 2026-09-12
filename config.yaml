@@ -1,0 +1,64 @@
+# BTC spot trading bot configuration. No secrets live here: API keys, webhook URLs and
+# the LIVE_TRADING switch come from the environment (see .env.example).
+
+exchange:
+  id: binance            # any ccxt spot exchange id
+  symbol: BTC/USDT
+  timeframe: 1h
+  live: false            # must ALSO have LIVE_TRADING=true in the environment to place real orders
+  sandbox: false         # exchange testnet, where ccxt supports it
+  fee_rate: 0.001        # taker fee (0.1%) used for paper fills and backtests
+  slippage_bps: 5        # simulated slippage per fill, basis points
+  candle_history: 500    # closed candles kept in memory for indicators
+  poll_interval_seconds: 10
+  candle_close_grace_seconds: 5
+  order_timeout_seconds: 30
+  order_poll_seconds: 1
+  max_retries: 5
+  backoff_base_seconds: 1
+  backoff_max_seconds: 60
+
+strategy:
+  name: ema_rsi
+  params:
+    ema_fast: 12
+    ema_slow: 26
+    rsi_period: 14
+    rsi_buy_min: 45          # do not buy without momentum
+    rsi_buy_max: 70          # do not buy into an overbought market
+    rsi_midline: 50          # RSI above this adds a confidence confirmation
+    atr_period: 14
+    atr_stop_mult: 2.0       # stop loss = close - 2.0 * ATR
+    atr_tp_mult: 3.0         # take profit = close + 3.0 * ATR
+    trend_lookback: 5        # slow EMA rising over N candles adds a confidence confirmation
+    confidence_base: 0.5
+    confidence_per_confirmation: 0.25
+    warmup_factor: 3
+
+risk:
+  risk_per_trade_pct: 1.0          # fixed fractional: 1% of equity at risk between entry and stop
+  max_position_pct: 25.0           # position notional cap as % of equity
+  max_daily_loss_pct: 3.0          # equity down 3% from the UTC day's start -> no entries until next day
+  max_consecutive_losses: 3        # then pause entries for cooldown_minutes
+  cooldown_minutes: 240
+  min_seconds_between_trades: 3600
+  min_confidence: 0.5              # signals below this confidence are treated as HOLD
+  min_order_notional: 10.0         # quote currency
+  kill_switch_file: ./data/KILL_SWITCH   # create this file to block ALL orders (entries and exits)
+
+paper:
+  initial_cash: 10000.0
+  initial_base: 0.0
+
+state:
+  db_path: ./data/bot.sqlite
+
+notify:
+  on_fill: true
+  on_halt: true
+  on_error: true
+  timeout_seconds: 10
+
+logging:
+  level: INFO
+  format: json          # json (one object per line) or text

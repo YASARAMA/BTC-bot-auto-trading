@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*.sqlite
+data/*.sqlite-journal
+data/history/
+data/KILL_SWITCH
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
