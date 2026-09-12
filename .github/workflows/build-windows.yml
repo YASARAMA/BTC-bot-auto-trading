@@ -1,0 +1,67 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  build-windows:
+    name: Build BTCBot.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-gui.txt
+      - name: Tests (Windows)
+        run: pytest -q
+      - name: Build executables
+        run: pyinstaller --clean --noconfirm btcbot.spec
+      - name: Smoke test the console build
+        shell: pwsh
+        run: |
+          $out = & dist\BTCBot-console.exe --smoke --root "$env:RUNNER_TEMP\btcbot-smoke"
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "smoke test failed" }
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item dist\BTCBot.exe, dist\BTCBot-console.exe, README.md package\
+          Compress-Archive -Path package\* -DestinationPath BTCBot-windows.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BTCBot-windows
+          path: |
+            dist/BTCBot.exe
+            dist/BTCBot-console.exe
+            BTCBot-windows.zip
+          if-no-files-found: error
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/BTCBot.exe
+            dist/BTCBot-console.exe
+            BTCBot-windows.zip

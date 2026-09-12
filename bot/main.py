@@ -9,6 +9,7 @@ import argparse
 import logging
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -41,6 +42,7 @@ class Runtime:
     store: StateStore
     notifier: Notifier
     replay: CsvMarketData | None = None
+    replay_delay_seconds: float = 0.0  # throttle replay so a UI can follow it
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -107,13 +109,6 @@ def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str |
                    store=store, notifier=notifier, replay=replay)
 
 
-class _Stop:
-    flag = False
-
-    def __call__(self, *_: Any) -> None:
-        self.flag = True
-
-
 def run_cycle(rt: Runtime, cycle: int) -> dict[str, Any]:
     cfg = rt.cfg
     now = rt.exchange.now_ms()
@@ -147,17 +142,20 @@ def run_cycle(rt: Runtime, cycle: int) -> dict[str, Any]:
     return summary
 
 
-def run_loop(rt: Runtime, *, once: bool = False, max_cycles: int = 0) -> int:
+def run_loop(rt: Runtime, *, once: bool = False, max_cycles: int = 0,
+             stop_event: threading.Event | None = None) -> int:
+    """Run cycles until stop_event is set, a signal arrives, or once/max_cycles is reached."""
     cfg = rt.cfg
-    stop = _Stop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(sig, stop)
-        except (ValueError, OSError):  # not in main thread
-            pass
+    stop = stop_event if stop_event is not None else threading.Event()
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(sig, lambda *_: stop.set())
+            except (ValueError, OSError):
+                pass
     cycle = 0
     errors = 0
-    while not stop.flag:
+    while not stop.is_set():
         cycle += 1
         try:
             summary = run_cycle(rt, cycle)
@@ -176,13 +174,15 @@ def run_loop(rt: Runtime, *, once: bool = False, max_cycles: int = 0) -> int:
                 log_event(log, "replay_finished", cycles=cycle)
                 break
             rt.replay.advance()
+            if rt.replay_delay_seconds > 0:
+                stop.wait(rt.replay_delay_seconds)
             continue
         delay = cfg.exchange.poll_interval_seconds
         if errors:
             delay = min(cfg.exchange.backoff_max_seconds, cfg.exchange.backoff_base_seconds * 2 ** min(errors, 8))
-        time.sleep(delay)
-    if stop.flag:
-        log_event(log, "shutdown", reason="signal", cycles=cycle)
+        stop.wait(delay)
+    if stop.is_set():
+        log_event(log, "shutdown", reason="stop requested", cycles=cycle)
     return 0
 
 

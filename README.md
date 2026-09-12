@@ -24,8 +24,38 @@ unattended.
 | `bot/backtest/` | Runs the *same* engine, risk manager and paper exchange over historical candles; metrics report |
 | `bot/notify/` | Telegram / Discord notifications for fills, halts and errors (silent when not configured) |
 | `bot/main.py` | The unattended loop: one structured JSON log line per cycle, never dies on a single failure |
+| `bot/ui/` | Local web dashboard and the desktop entry point (`python -m bot.ui`, `BTCBot.exe`) |
 
 Spot only. No leverage, no margin, no shorting.
+
+## Desktop app (Windows .exe)
+
+Every push builds `BTCBot.exe` on GitHub Actions (workflow "Build Windows app"). Download
+it from the workflow run's **Artifacts** (`BTCBot-windows`), or from the **Releases** page
+when a version tag such as `v0.2.0` is pushed. Unzip and double-click `BTCBot.exe`:
+
+- The app opens a dashboard window (native window through WebView2, or your default
+  browser if that is unavailable). Nothing is exposed to the network: the UI listens on
+  `127.0.0.1` only, on a random port, with a per-run token.
+- On first start it creates `config.yaml`, a `data/` folder and the sample candles next to
+  the exe. Everything the app writes (SQLite state, `.env` with your keys, logs, the kill
+  switch) stays in that folder.
+- **Start (paper)** trades with real market data and simulated fills. **Demo** replays the
+  bundled historical candles at several candles per second so you can watch it work.
+  **Kill switch** blocks every order until you turn it off. **Quit** stops the bot cleanly.
+- Tabs: Dashboard (equity curve, last signal, risk state), Trades, Backtest (run on a CSV
+  or download a date range), Settings (every `config.yaml` key, API keys, notifications),
+  Log.
+- `BTCBot-console.exe` is the same app with a console window, useful when something fails
+  before the UI appears. Logs also go to `data/bot.log`.
+
+Windows SmartScreen will warn about an unsigned executable the first time: choose
+"More info" → "Run anyway". Some antivirus tools flag PyInstaller builds; build it yourself
+from this repository if you prefer (`pip install -r requirements.txt -r requirements-gui.txt`
+then `pyinstaller --clean --noconfirm btcbot.spec`).
+
+To run the same UI from source on any OS: `python -m bot.ui` (add `--browser` to skip the
+native window).
 
 ## Quick start (paper trading)
 

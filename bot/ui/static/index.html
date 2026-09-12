@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="token" content="__TOKEN__">
+<title>BTC Bot</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">₿</span>
+    <div>
+      <div class="title">BTC Bot</div>
+      <div class="subtitle" id="cfg-summary">loading…</div>
+    </div>
+  </div>
+  <div class="statusbox">
+    <span class="dot" id="state-dot"></span>
+    <span id="state-text">connecting</span>
+    <span class="badge" id="mode-badge">—</span>
+  </div>
+  <div class="actions">
+    <button id="btn-start" class="primary" title="Start the bot with real market data and simulated fills (paper), or live if both live switches are on">Start</button>
+    <button id="btn-demo" title="Replay historical candles quickly so you can watch the bot work">Demo</button>
+    <button id="btn-stop" class="danger" disabled>Stop</button>
+    <button id="btn-kill" class="kill" title="Kill switch: block every order until you turn it off">Kill switch: off</button>
+    <button id="btn-quit" class="ghost" title="Stop the bot and close the app">Quit</button>
+  </div>
+</header>
+
+<div class="alert hidden" id="alert"></div>
+
+<nav class="tabs">
+  <button data-tab="dashboard" class="active">Dashboard</button>
+  <button data-tab="trades">Trades</button>
+  <button data-tab="backtest">Backtest</button>
+  <button data-tab="settings">Settings</button>
+  <button data-tab="log">Log</button>
+</nav>
+
+<main>
+  <!-- Dashboard -->
+  <section id="tab-dashboard" class="tab active">
+    <div class="tiles">
+      <div class="tile"><div class="label">Price</div><div class="value" id="t-price">—</div></div>
+      <div class="tile"><div class="label">Equity</div><div class="value" id="t-equity">—</div><div class="sub" id="t-equity-sub"></div></div>
+      <div class="tile"><div class="label">Cash</div><div class="value" id="t-cash">—</div></div>
+      <div class="tile"><div class="label">Position</div><div class="value" id="t-position">flat</div><div class="sub" id="t-position-sub"></div></div>
+      <div class="tile"><div class="label">Unrealised P/L</div><div class="value" id="t-upnl">—</div></div>
+      <div class="tile"><div class="label">Today</div><div class="value" id="t-daily">—</div><div class="sub" id="t-daily-sub"></div></div>
+      <div class="tile"><div class="label">Cycles</div><div class="value" id="t-cycles">0</div><div class="sub" id="t-candle"></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">Equity curve</div>
+        <canvas id="equity-chart" height="260"></canvas>
+        <div class="muted small" id="equity-note">No equity data yet. Start the bot or run a demo.</div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">Last signal</div>
+          <div class="signal"><span class="badge big" id="sig-action">—</span><span id="sig-conf" class="muted"></span></div>
+          <div class="reason" id="sig-reason">The strategy has not evaluated a candle yet.</div>
+          <div class="reason muted" id="sig-decision"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Risk</div>
+          <table class="kv" id="risk-table"><tbody>
+            <tr><td>Halted</td><td id="r-halted">—</td></tr>
+            <tr><td>Cooldown</td><td id="r-cooldown">—</td></tr>
+            <tr><td>Consecutive losses</td><td id="r-losses">—</td></tr>
+            <tr><td>Trades today</td><td id="r-trades">—</td></tr>
+            <tr><td>Kill switch</td><td id="r-kill">—</td></tr>
+          </tbody></table>
+        </div>
+        <div class="card">
+          <div class="card-title">Recent events</div>
+          <ul class="events" id="alerts"><li class="muted">Nothing yet.</li></ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Trades -->
+  <section id="tab-trades" class="tab">
+    <div class="card">
+      <div class="card-title">Closed trades <span class="muted small" id="trades-count"></span></div>
+      <div class="table-wrap">
+        <table class="data" id="trades-table">
+          <thead><tr><th>Entry</th><th>Exit</th><th class="num">Qty</th><th class="num">Entry px</th><th class="num">Exit px</th><th class="num">Fees</th><th class="num">P/L</th><th class="num">P/L %</th><th>Exit</th></tr></thead>
+          <tbody><tr><td colspan="9" class="muted">No trades yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Backtest -->
+  <section id="tab-backtest" class="tab">
+    <div class="grid2 wide-left">
+      <div class="card">
+        <div class="card-title">Run a backtest</div>
+        <form id="bt-form" class="form">
+          <label>Data <select id="bt-source"></select></label>
+          <div class="row">
+            <label>From <input type="date" id="bt-from"></label>
+            <label>To <input type="date" id="bt-to"></label>
+            <label>Starting cash <input type="number" id="bt-cash" min="1" step="100" placeholder="from config"></label>
+          </div>
+          <div class="muted small">Dates are optional for a CSV file and required for a download. Strategy and risk settings come from the Settings tab.</div>
+          <div class="row"><button type="submit" class="primary" id="bt-run">Run backtest</button><span id="bt-status" class="muted"></span></div>
+        </form>
+        <div id="bt-result" class="hidden">
+          <div class="tiles compact" id="bt-tiles"></div>
+          <canvas id="bt-chart" height="220"></canvas>
+          <pre class="report" id="bt-report"></pre>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">How to read it</div>
+        <p class="muted">Signals are computed on a closed candle and filled at the next candle's open. Stops and take-profits fill at their level, or at the open when a candle gaps through them. Fees and slippage from Settings are applied to every fill.</p>
+        <p class="muted"><strong>Backtest results are hypothetical.</strong> Past performance does not predict future returns. A strategy that looks good on one period can lose on the next.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="tab">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">Bot settings <span class="muted small">(config.yaml)</span></div>
+        <form id="cfg-form" class="form"></form>
+        <div class="row">
+          <button class="primary" id="cfg-save">Save settings</button>
+          <button id="cfg-reload" class="ghost">Reload</button>
+          <span class="muted small">Changes apply the next time you press Start.</span>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">Exchange API keys & live trading</div>
+          <p class="muted small">Keys are stored in <code id="env-path">.env</code> next to the app and never leave your computer. Create the key with <strong>trade + read only, no withdrawals</strong>. Leave a field empty to keep its current value.</p>
+          <form id="sec-form" class="form">
+            <label>API key <input type="password" id="sec-key" autocomplete="off"><span class="muted small" id="sec-key-state"></span></label>
+            <label>API secret <input type="password" id="sec-secret" autocomplete="off"><span class="muted small" id="sec-secret-state"></span></label>
+            <label>API passphrase (OKX, KuCoin, Coinbase) <input type="password" id="sec-password" autocomplete="off"></label>
+            <label class="check danger-text"><input type="checkbox" id="sec-live"> LIVE_TRADING: allow real orders (also needs "exchange.live" on in Bot settings)</label>
+            <div class="row"><button class="primary" id="sec-save">Save keys</button><button id="sec-clear" class="ghost">Remove keys</button></div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">Notifications</div>
+          <form id="notif-form" class="form">
+            <label>Telegram bot token <input type="password" id="n-tg-token" autocomplete="off"></label>
+            <label>Telegram chat id <input type="text" id="n-tg-chat" autocomplete="off"></label>
+            <label>Discord webhook URL <input type="password" id="n-discord" autocomplete="off"></label>
+            <div class="row"><button class="primary" id="notif-save">Save notifications</button><span class="muted small" id="notif-state"></span></div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Log -->
+  <section id="tab-log" class="tab">
+    <div class="card">
+      <div class="card-title">Log
+        <label class="inline"><input type="checkbox" id="log-important" checked> important only</label>
+        <label class="inline"><input type="checkbox" id="log-follow" checked> follow</label>
+        <span class="muted small" id="log-file"></span>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="muted small"><span id="version"></span> · Spot only, no leverage · This software can lose money; paper trade first.</footer>
+
+<dialog id="confirm-live">
+  <h3>Start LIVE trading?</h3>
+  <p>Both live switches are on and API keys are present. The bot will place <strong>real orders with real money</strong> on <span id="live-exchange"></span>.</p>
+  <p>Type <code>LIVE</code> to confirm.</p>
+  <input id="live-typed" autocomplete="off">
+  <div class="row"><button id="live-cancel" class="ghost">Cancel</button><button id="live-go" class="danger" disabled>Start live</button></div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

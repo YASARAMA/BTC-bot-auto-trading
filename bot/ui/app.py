@@ -1,0 +1,427 @@
+"""BotController: everything the UI can do, independent of HTTP.
+
+Owns the bot thread, the in-memory event buffer, the kill switch, config and secret
+files, read-only access to the SQLite state, and backtest jobs."""
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import sqlite3
+import sys
+import threading
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from bot.backtest.__main__ import format_report
+from bot.backtest.engine import run_backtest
+from bot.common import now_ms, parse_date_ms
+from bot.config import (
+    DOTENV_KEYS,
+    BotConfig,
+    LiveSafetyError,
+    load_config,
+    load_secrets,
+    resolve_mode,
+    write_dotenv,
+)
+from bot.data.history import cache_path, download_ohlcv, load_csv
+from bot.logging_utils import EventBufferHandler, log_event
+from bot.main import Runtime, build_runtime, run_loop
+
+log = logging.getLogger("bot.ui")
+
+VERSION = "0.2.0"
+
+
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def bundle_dir() -> Path:
+    """Where bundled read-only resources live (PyInstaller temp dir, or the repo)."""
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+
+
+def app_dir() -> Path:
+    """Writable application directory: next to the exe, or the repo root in development."""
+    if is_frozen():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
+def prepare_app_dir(root: Path) -> None:
+    """First run: make sure config.yaml, data/ and the sample candles exist next to the app."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "data").mkdir(exist_ok=True)
+    src = bundle_dir()
+    if not (root / "config.yaml").exists() and (src / "config.yaml").exists():
+        shutil.copy(src / "config.yaml", root / "config.yaml")
+    samples_src = src / "data" / "samples"
+    if samples_src.is_dir():
+        samples_dst = root / "data" / "samples"
+        samples_dst.mkdir(parents=True, exist_ok=True)
+        for f in samples_src.glob("*.csv"):
+            if not (samples_dst / f.name).exists():
+                shutil.copy(f, samples_dst / f.name)
+
+
+def _downsample(points: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if len(points) <= limit:
+        return points
+    step = len(points) / limit
+    return [points[int(i * step)] for i in range(limit)] + [points[-1]]
+
+
+class BotController:
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+        self.config_path = self.root / "config.yaml"
+        self.env_path = self.root / ".env"
+        self.events = EventBufferHandler(maxlen=3000)
+        self.events.listeners.append(self._on_event)
+        self._lock = threading.RLock()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self.quit_event = threading.Event()
+        self.runtime: Runtime | None = None
+        self.mode: str | None = None
+        self.state = "stopped"  # stopped | starting | running | stopping | error
+        self.error: str | None = None
+        self.last_cycle: dict[str, Any] = {}
+        self.cycles = 0
+        self.started_at: int | None = None
+        self.replay_path: str | None = None
+        self.recent_alerts: list[dict[str, Any]] = []
+        self._bt_lock = threading.Lock()
+        self._bt_thread: threading.Thread | None = None
+        self.backtest: dict[str, Any] = {"state": "idle"}
+
+    # ----- config ------------------------------------------------------------------------
+    def load_cfg(self) -> BotConfig:
+        return load_config(self.config_path)
+
+    def _abs(self, path: str) -> str:
+        p = Path(path)
+        return str(p if p.is_absolute() else (self.root / p).resolve())
+
+    def runtime_cfg(self, cfg: BotConfig) -> BotConfig:
+        """Config for the bot thread: relative file paths are anchored to the app folder,
+        so the UI works no matter what the process working directory is."""
+        return cfg.model_copy(update={
+            "state": cfg.state.model_copy(update={"db_path": self._abs(cfg.state.db_path)}),
+            "risk": cfg.risk.model_copy(update={"kill_switch_file": self._abs(cfg.risk.kill_switch_file or "data/KILL_SWITCH")}),
+        })
+
+    def config_dict(self) -> dict[str, Any]:
+        return self.load_cfg().printable()
+
+    def config_yaml(self) -> str:
+        return self.config_path.read_text(encoding="utf-8")
+
+    def save_config(self, data: dict[str, Any]) -> BotConfig:
+        cfg = BotConfig.model_validate(data)
+        text = yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
+        self.config_path.write_text("# Written by the BTC bot UI. See README.md for what each key means.\n" + text,
+                                    encoding="utf-8")
+        return cfg
+
+    def save_config_yaml(self, text: str) -> BotConfig:
+        raw = yaml.safe_load(text) or {}
+        cfg = BotConfig.model_validate(raw)
+        self.config_path.write_text(text, encoding="utf-8")
+        return cfg
+
+    # ----- secrets ------------------------------------------------------------------------
+    def secrets_status(self) -> dict[str, Any]:
+        return {
+            "api_key_set": bool(os.environ.get("EXCHANGE_API_KEY")),
+            "api_secret_set": bool(os.environ.get("EXCHANGE_API_SECRET")),
+            "api_password_set": bool(os.environ.get("EXCHANGE_API_PASSWORD")),
+            "telegram_set": bool(os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")),
+            "discord_set": bool(os.environ.get("DISCORD_WEBHOOK_URL")),
+            "live_trading_env": (os.environ.get("LIVE_TRADING") or "").strip().lower() in {"1", "true", "yes", "on"},
+            "env_file": str(self.env_path),
+        }
+
+    def save_secrets(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """Empty string keeps the current value; None clears it; anything else replaces it."""
+        clean: dict[str, str | None] = {}
+        for key, value in updates.items():
+            if key not in DOTENV_KEYS:
+                continue
+            if value is None:
+                clean[key] = None
+                os.environ.pop(key, None)
+            elif isinstance(value, bool):
+                clean[key] = "true" if value else "false"
+                os.environ[key] = clean[key]
+            elif isinstance(value, str) and value.strip():
+                clean[key] = value.strip()
+                os.environ[key] = value.strip()
+        if clean:
+            write_dotenv(self.env_path, clean)
+        return self.secrets_status()
+
+    # ----- bot lifecycle ------------------------------------------------------------------
+    def start(self, *, replay: str | None = None, replay_delay: float = 0.25, confirm_live: bool = False) -> dict[str, Any]:
+        with self._lock:
+            if self.state in ("starting", "running", "stopping"):
+                raise RuntimeError(f"bot is {self.state}")
+            cfg = self.load_cfg()
+            secrets = load_secrets()
+            replay_file: Path | None = None
+            if replay:
+                replay_file = Path(replay)
+                if not replay_file.is_absolute():
+                    replay_file = self.root / replay_file
+                if not replay_file.is_file():
+                    raise FileNotFoundError(f"replay file not found: {replay_file}")
+                mode = "paper"
+                if cfg.exchange.live or secrets.has_api_keys and self.secrets_status()["live_trading_env"]:
+                    log.info("replay requested: running in paper mode regardless of live switches")
+            else:
+                mode = resolve_mode(cfg, secrets)
+                if mode == "live" and not confirm_live:
+                    raise LiveSafetyError("Live mode needs explicit confirmation from the UI.")
+            self._stop = threading.Event()
+            self.state, self.error, self.mode = "starting", None, mode
+            self.last_cycle, self.cycles, self.started_at = {}, 0, None
+            self.replay_path = str(replay_file) if replay_file else None
+            self._thread = threading.Thread(
+                target=self._run, args=(cfg, secrets, mode, replay_file, replay_delay), daemon=True, name="bot-loop")
+            self._thread.start()
+        return self.status()
+
+    def _run(self, cfg: BotConfig, secrets: Any, mode: str, replay: Path | None, replay_delay: float) -> None:
+        rt: Runtime | None = None
+        try:
+            log_event(log, "ui_start", mode=mode, replay=str(replay) if replay else None, config=cfg.printable())
+            rt = build_runtime(self.runtime_cfg(cfg), secrets, mode, str(replay) if replay else None, None)
+            rt.replay_delay_seconds = replay_delay if replay else 0.0
+            self.runtime = rt
+            rt.engine.reconcile()
+            with self._lock:
+                self.state, self.started_at = "running", now_ms()
+            rt.notifier.send(f"bot started in {mode} mode ({cfg.strategy.name}, {cfg.exchange.timeframe})")
+            run_loop(rt, stop_event=self._stop)
+            with self._lock:
+                if self.state != "error":
+                    self.state = "stopped"
+        except Exception as exc:  # noqa: BLE001
+            log.exception("bot thread failed")
+            with self._lock:
+                self.state, self.error = "error", f"{type(exc).__name__}: {exc}"
+        finally:
+            if rt is not None:
+                try:
+                    rt.engine.persist()
+                    rt.store.close()
+                except Exception:  # noqa: BLE001
+                    log.exception("persist on shutdown failed")
+            self.runtime = None
+
+    def stop(self, wait: float = 0.0) -> dict[str, Any]:
+        with self._lock:
+            if self.state in ("running", "starting"):
+                self.state = "stopping"
+            self._stop.set()
+            thread = self._thread
+        if wait and thread is not None:
+            thread.join(wait)
+        return self.status()
+
+    def _on_event(self, item: dict[str, Any]) -> None:
+        ev = item.get("event")
+        if ev == "cycle":
+            self.last_cycle = item
+            self.cycles = int(item.get("cycle", self.cycles) or 0)
+        elif ev in ("trade_closed", "position_opened", "risk_event", "cycle_error", "protective_exit_blocked",
+                    "replay_finished", "startup_refused", "shutdown", "reconcile"):
+            self.recent_alerts = (self.recent_alerts + [item])[-30:]
+
+    # ----- kill switch --------------------------------------------------------------------
+    def kill_switch_path(self) -> Path:
+        return Path(self._abs(self.load_cfg().risk.kill_switch_file or "data/KILL_SWITCH"))
+
+    def kill_switch(self, active: bool | None = None) -> bool:
+        path = self.kill_switch_path()
+        if active is True:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("created from the UI\n", encoding="utf-8")
+            log_event(log, "kill_switch_on", level=logging.WARNING, path=str(path))
+        elif active is False and path.exists():
+            path.unlink()
+            log_event(log, "kill_switch_off", path=str(path))
+        return path.exists()
+
+    # ----- status -------------------------------------------------------------------------
+    def status(self) -> dict[str, Any]:
+        try:
+            cfg = self.load_cfg()
+            cfg_summary: dict[str, Any] = {
+                "exchange": cfg.exchange.id, "symbol": cfg.exchange.symbol, "timeframe": cfg.exchange.timeframe,
+                "live": cfg.exchange.live, "strategy": cfg.strategy.name, "initial_cash": cfg.paper.initial_cash,
+                "risk_per_trade_pct": cfg.risk.risk_per_trade_pct, "max_daily_loss_pct": cfg.risk.max_daily_loss_pct,
+                "max_position_pct": cfg.risk.max_position_pct,
+            }
+            config_error = None
+        except Exception as exc:  # noqa: BLE001 - a broken config must still let the UI open
+            cfg_summary, config_error = {}, f"{type(exc).__name__}: {exc}"
+        secrets = self.secrets_status()
+        live_possible = bool(cfg_summary.get("live") and secrets["live_trading_env"]
+                             and secrets["api_key_set"] and secrets["api_secret_set"])
+        last = self.last_cycle
+        position = last.get("position")
+        rt = self.runtime
+        if rt is not None and rt.engine is not None:
+            try:
+                position = rt.engine.position.to_dict() if rt.engine.position else None
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            kill = self.kill_switch_path().exists()
+        except Exception:  # noqa: BLE001
+            kill = False
+        return {
+            "version": VERSION,
+            "state": self.state,
+            "mode": self.mode,
+            "error": self.error,
+            "started_at": self.started_at,
+            "cycles": self.cycles,
+            "replay": self.replay_path,
+            "config": cfg_summary,
+            "config_error": config_error,
+            "live_possible": live_possible,
+            "kill_switch": kill,
+            "secrets": secrets,
+            "last_cycle": last,
+            "position": position,
+            "price": last.get("price") or last.get("close"),
+            "equity": last.get("equity"),
+            "cash": last.get("cash"),
+            "risk": last.get("risk"),
+            "signal": last.get("signal"),
+            "decision": last.get("decision"),
+            "alerts": self.recent_alerts[-10:],
+            "backtest_state": self.backtest.get("state"),
+            "paths": {"root": str(self.root), "config": str(self.config_path), "db": str(self.db_path()),
+                      "log": str(self.root / "data" / "bot.log")},
+            "now": now_ms(),
+        }
+
+    # ----- persisted data (read-only) ----------------------------------------------------
+    def db_path(self) -> Path:
+        try:
+            p = Path(self.load_cfg().state.db_path)
+        except Exception:  # noqa: BLE001
+            p = Path("data/bot.sqlite")
+        return p if p.is_absolute() else self.root / p
+
+    def _read_conn(self) -> sqlite3.Connection | None:
+        path = self.db_path()
+        if not path.exists():
+            return None
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=2.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def trades(self, limit: int = 500) -> list[dict[str, Any]]:
+        conn = self._read_conn()
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute("SELECT * FROM trades ORDER BY exit_ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows][::-1]
+        finally:
+            conn.close()
+
+    def equity(self, limit: int = 2000) -> list[dict[str, Any]]:
+        conn = self._read_conn()
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute("SELECT ts, equity, cash, position_qty, price FROM equity ORDER BY ts").fetchall()
+            return _downsample([dict(r) for r in rows], limit)
+        finally:
+            conn.close()
+
+    def samples(self) -> list[str]:
+        out: list[str] = []
+        for folder in ("data/samples", "data/history"):
+            d = self.root / folder
+            if d.is_dir():
+                out.extend(str(Path(folder) / f.name) for f in sorted(d.glob("*.csv")))
+        return out
+
+    # ----- backtests ----------------------------------------------------------------------
+    def start_backtest(self, params: dict[str, Any]) -> dict[str, Any]:
+        with self._bt_lock:
+            if self.backtest.get("state") == "running":
+                raise RuntimeError("a backtest is already running")
+            self.backtest = {"state": "running", "params": params, "started_at": now_ms()}
+            self._bt_thread = threading.Thread(target=self._run_backtest, args=(params,), daemon=True, name="backtest")
+            self._bt_thread.start()
+        return dict(self.backtest)
+
+    def _run_backtest(self, params: dict[str, Any]) -> None:
+        try:
+            cfg = self.load_cfg()
+            since = parse_date_ms(params["from"]) if params.get("from") else None
+            until = parse_date_ms(params["to"]) + 86_400_000 - 1 if params.get("to") else None
+            csv = params.get("csv")
+            if csv:
+                path = Path(csv)
+                if not path.is_absolute():
+                    path = self.root / path
+                df = load_csv(path)
+                source = str(path.name)
+            else:
+                if since is None or until is None:
+                    raise ValueError("choose a CSV file or give both dates to download candles")
+                from bot.execution.live import LiveExchange
+
+                market = LiveExchange(cfg.exchange)
+                cache = cache_path(self.root / "data" / "history", cfg.exchange.id, cfg.exchange.symbol, cfg.exchange.timeframe)
+                df = download_ohlcv(market, symbol=cfg.exchange.symbol, timeframe=cfg.exchange.timeframe,
+                                    since_ms=since, until_ms=until, cache=cache)
+                source = f"{cfg.exchange.id} download"
+            if since is not None:
+                df = df[df["ts"] >= since]
+            if until is not None:
+                df = df[df["ts"] <= until]
+            df = df.reset_index(drop=True)
+            if df.empty:
+                raise ValueError("no candles in the requested range")
+            strategy_params = dict(cfg.strategy.params)
+            strategy_params.update(params.get("params") or {})
+            cash = float(params["cash"]) if params.get("cash") else None
+            result = run_backtest(df, self.runtime_cfg(cfg), strategy_name=params.get("strategy") or None,
+                                  params=strategy_params, initial_cash=cash)
+            curve = [{"ts": int(r.ts), "equity": float(r.equity), "position_qty": float(r.position_qty)}
+                     for r in result.equity.itertuples()]
+            with self._bt_lock:
+                self.backtest = {
+                    "state": "done", "params": params, "source": source, "candles": int(len(df)),
+                    "metrics": result.metrics, "strategy": result.strategy, "config": result.config,
+                    "trades": [t.to_dict() for t in result.trades][-200:],
+                    "equity": _downsample(curve, 1500),
+                    "report": format_report(result, show_trades=10),
+                    "finished_at": now_ms(),
+                }
+        except Exception as exc:  # noqa: BLE001
+            log.exception("backtest failed")
+            with self._bt_lock:
+                self.backtest = {"state": "error", "params": params, "error": f"{type(exc).__name__}: {exc}"}
+
+    def backtest_status(self) -> dict[str, Any]:
+        with self._bt_lock:
+            return dict(self.backtest)
+
+    # ----- shutdown -----------------------------------------------------------------------
+    def quit(self, wait: float = 15.0) -> None:
+        self.stop(wait=wait)
+        self.quit_event.set()
