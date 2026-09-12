@@ -358,7 +358,8 @@
     // grid + price axis (recessive)
     ctx.font = '11px system-ui'; ctx.textBaseline = 'middle';
     const ticks = niceTicks(lo, hi, 6);
-    ticks.forEach((p) => { const y = Y(p); ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); ctx.fillStyle = C.text; ctx.textAlign = 'left'; ctx.fillText(fmt.money(p, p >= 100 ? 0 : 2), w - pad.r + 6, y); });
+    const labelYs = [pos && pos.stop_loss, pos && pos.take_profit, pos && pos.entry_price, d.last_price].filter((v) => v).map(Y);
+    ticks.forEach((p) => { const y = Y(p); if (labelYs.some((ly) => Math.abs(ly - y) < 10)) return; ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); ctx.fillStyle = C.text; ctx.textAlign = 'left'; ctx.fillText(fmt.money(p, p >= 100 ? 0 : 2), w - pad.r + 6, y); });
     // time axis
     const every = Math.max(1, Math.round(rows.length / Math.max(3, Math.floor(plotW / 110))));
     ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
