@@ -193,7 +193,8 @@ def test_candles_endpoint_from_replay_and_from_exchange(ui):
     wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 150)
     code, data = call(server, "/api/candles?limit=100")
     assert code == 200 and data["source"] == "replay" and 50 <= len(data["candles"]) <= 100
-    assert data["candles"][-1][0] <= call(server, "/api/status")[1]["last_cycle"]["candle_ts"]
+    # The feed may already hold the candle the engine is about to evaluate: allow one timeframe of skew.
+    assert data["candles"][-1][0] <= call(server, "/api/status")[1]["last_cycle"]["candle_ts"] + 3_600_000
     assert isinstance(data["trades"], list) and all("entry_ts" in t for t in data["trades"])
     call(server, "/api/stop", {"wait": 10})
     wait_for(lambda: call(server, "/api/status")[1]["state"] == "stopped")
