@@ -43,9 +43,11 @@ when a version tag such as `v0.2.0` is pushed. Unzip and double-click `BTCBot.ex
 - **Start (paper)** trades with real market data and simulated fills. **Demo** replays the
   bundled historical candles at several candles per second so you can watch it work.
   **Kill switch** blocks every order until you turn it off. **Quit** stops the bot cleanly.
-- Tabs: Dashboard (equity curve, last signal, risk state), Trades, Backtest (run on a CSV
-  or download a date range), Settings (every `config.yaml` key, API keys, notifications),
-  Log.
+- Tabs: Dashboard (equity curve, last signal, risk state), Chart (candlesticks from the
+  exchange with EMA lines, volume, the open position's entry/stop/take-profit levels, entry
+  and exit markers, crosshair tooltip, scroll to zoom, optional TradingView embed), Trades,
+  Backtest (run on a CSV or download a date range), Settings (every `config.yaml` key, API
+  keys, notifications), Log.
 - `BTCBot-console.exe` is the same app with a console window, useful when something fails
   before the UI appears. Logs also go to `data/bot.log`.
 

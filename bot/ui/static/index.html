@@ -35,6 +35,7 @@
 
 <nav class="tabs">
   <button data-tab="dashboard" class="active">Dashboard</button>
+  <button data-tab="chart">Chart</button>
   <button data-tab="trades">Trades</button>
   <button data-tab="backtest">Backtest</button>
   <button data-tab="settings">Settings</button>
@@ -81,6 +82,39 @@
           <ul class="events" id="alerts"><li class="muted">Nothing yet.</li></ul>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- Chart -->
+  <section id="tab-chart" class="tab">
+    <div class="card">
+      <div class="chart-toolbar">
+        <div class="card-title" style="margin:0"><span id="chart-title">Price chart</span> <span class="muted small" id="chart-source"></span></div>
+        <label class="inline">candles
+          <select id="chart-limit"><option>100</option><option selected>200</option><option>300</option><option>500</option><option>1000</option></select>
+        </label>
+        <label class="inline"><input type="checkbox" id="chart-ema" checked> EMA</label>
+        <label class="inline"><input type="checkbox" id="chart-vol" checked> volume</label>
+        <label class="inline"><input type="checkbox" id="chart-trades" checked> trades</label>
+        <button id="chart-refresh" class="ghost">Refresh</button>
+        <button id="chart-tv" class="ghost" title="Embed the TradingView chart for this market (needs internet)">TradingView</button>
+      </div>
+      <div class="legend" id="chart-legend">
+        <span><i class="sw line" style="background:#3987e5"></i> EMA fast</span>
+        <span><i class="sw line" style="background:#d95926"></i> EMA slow</span>
+        <span><i class="sw candle up"></i> up candle (hollow)</span>
+        <span><i class="sw candle down"></i> down candle (filled)</span>
+        <span><i class="sw mark">▲</i> entry</span>
+        <span><i class="sw mark">▼</i> exit</span>
+        <span><i class="sw dash"></i> stop / take profit</span>
+      </div>
+      <div class="chart-wrap" id="chart-wrap">
+        <canvas id="price-chart" height="520"></canvas>
+        <div class="tooltip hidden" id="chart-tip"></div>
+        <div class="muted small chart-empty" id="chart-empty">Loading candles…</div>
+      </div>
+      <div class="tv-wrap hidden" id="tv-wrap"></div>
+      <div class="muted small" id="chart-note">Candles come from the exchange configured in Settings (Binance by default): the running bot's own candle window, or a fresh public fetch when the bot is stopped. Scroll on the chart to zoom.</div>
     </div>
   </section>
 

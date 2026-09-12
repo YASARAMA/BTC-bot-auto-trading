@@ -172,3 +172,40 @@ def test_samples_and_quit(ui):
     assert any(s.endswith("synthetic.csv") for s in samples) and any("binance" in s for s in samples)
     assert call(server, "/api/quit", {})[0] == 200
     wait_for(lambda: c.quit_event.is_set())
+
+
+def test_candles_endpoint_from_replay_and_from_exchange(ui):
+    root, c, server = ui
+    # Stopped: candles come from the (injected) exchange market data, cached for a while.
+    from tests.test_feed import FakeMarket
+
+    df = make_ohlcv(trending_series(), spread=0.003)
+    fake = FakeMarket(df)
+    c.market_factory = lambda cfg: fake
+    code, data = call(server, "/api/candles?limit=120")
+    assert code == 200 and data["source"] == "exchange" and len(data["candles"]) == 120
+    assert data["symbol"] == "BTC/USDT" and set(data["indicators"]) >= {"ema_fast", "ema_slow", "rsi", "atr"}
+    assert len(data["indicators"]["ema_fast"]) == 120 and data["position"] is None
+    call(server, "/api/candles?limit=120")
+    assert fake.calls == 1  # second call served from the cache
+    # Running a replay: candles come from the bot's own feed window and carry its trades.
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.02})
+    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 150)
+    code, data = call(server, "/api/candles?limit=100")
+    assert code == 200 and data["source"] == "replay" and 50 <= len(data["candles"]) <= 100
+    assert data["candles"][-1][0] <= call(server, "/api/status")[1]["last_cycle"]["candle_ts"]
+    assert isinstance(data["trades"], list) and all("entry_ts" in t for t in data["trades"])
+    call(server, "/api/stop", {"wait": 10})
+    wait_for(lambda: call(server, "/api/status")[1]["state"] == "stopped")
+
+
+def test_candles_endpoint_reports_exchange_failure(ui):
+    root, c, server = ui
+
+    class Down:
+        def fetch_ohlcv(self, *a, **k):
+            raise ConnectionError("exchange unreachable")
+
+    c.market_factory = lambda cfg: Down()
+    code, data = call(server, "/api/candles?limit=100")
+    assert code == 500 and "unreachable" in data["error"]

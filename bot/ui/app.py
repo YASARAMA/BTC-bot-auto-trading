@@ -27,7 +27,9 @@ from bot.config import (
     resolve_mode,
     write_dotenv,
 )
+from bot.data.feed import rows_to_frame
 from bot.data.history import cache_path, download_ohlcv, load_csv
+from bot.strategy import get_strategy
 from bot.logging_utils import EventBufferHandler, log_event
 from bot.main import Runtime, build_runtime, run_loop
 
@@ -98,6 +100,9 @@ class BotController:
         self._bt_lock = threading.Lock()
         self._bt_thread: threading.Thread | None = None
         self.backtest: dict[str, Any] = {"state": "idle"}
+        self._chart_cache: dict[str, Any] = {}
+        self._chart_lock = threading.Lock()
+        self.market_factory: Any = None  # tests inject a fake market data source here
 
     # ----- config ------------------------------------------------------------------------
     def load_cfg(self) -> BotConfig:
@@ -356,6 +361,61 @@ class BotController:
             if d.is_dir():
                 out.extend(str(Path(folder) / f.name) for f in sorted(d.glob("*.csv")))
         return out
+
+    # ----- chart ---------------------------------------------------------------------------
+    def _chart_rows(self, cfg: BotConfig, limit: int) -> tuple[list[list[float]], str]:
+        """Candles for the chart: the running bot's window, else a fresh public fetch (cached 20 s)."""
+        rt = self.runtime
+        if rt is not None and self.state == "running" and rt.feed.latest_ts is not None:
+            df = rt.feed.candles().tail(limit)
+            source = "replay" if rt.replay is not None else "feed"
+            return df[["ts", "open", "high", "low", "close", "volume"]].values.tolist(), source
+        key = f"{cfg.exchange.id}:{cfg.exchange.symbol}:{cfg.exchange.timeframe}:{limit}"
+        with self._chart_lock:
+            hit = self._chart_cache.get(key)
+            if hit and now_ms() - hit["at"] < 20_000:
+                return hit["rows"], "exchange"
+        if self.market_factory is not None:
+            market = self.market_factory(cfg)
+        else:
+            from bot.execution.live import LiveExchange
+
+            quick = cfg.exchange.model_copy(update={"max_retries": 1, "backoff_base_seconds": 0.5, "backoff_max_seconds": 1.0})
+            market = LiveExchange(quick, None)
+        rows = market.fetch_ohlcv(cfg.exchange.symbol, cfg.exchange.timeframe, None, limit)
+        with self._chart_lock:
+            self._chart_cache[key] = {"at": now_ms(), "rows": rows}
+        return rows, "exchange"
+
+    def candles(self, limit: int = 300) -> dict[str, Any]:
+        cfg = self.load_cfg()
+        limit = max(50, min(int(limit), 1000))
+        rows, source = self._chart_rows(cfg, limit)
+        df = rows_to_frame(rows)
+        indicators: dict[str, list[float | None]] = {}
+        try:
+            strategy = get_strategy(cfg.strategy.name, cfg.strategy.params)
+            calc = getattr(strategy, "indicators", None)
+            if calc is not None and len(df):
+                ind = calc(df)
+                for col in ind.columns:
+                    indicators[col] = [None if v != v else round(float(v), 6) for v in ind[col].tolist()]
+        except Exception as exc:  # noqa: BLE001 - the chart must still show candles
+            log.warning("chart indicators failed: %s", exc)
+        lo = int(df["ts"].iloc[0]) if len(df) else 0
+        trades = [t for t in self.trades(limit=2000) if t["exit_ts"] >= lo]
+        rt = self.runtime
+        position = None
+        if rt is not None and rt.engine is not None and rt.engine.position is not None:
+            position = rt.engine.position.to_dict()
+        elif self.state != "running":
+            position = None
+        last_price = self.last_cycle.get("price") if self.state == "running" else None
+        return {
+            "source": source, "symbol": cfg.exchange.symbol, "timeframe": cfg.exchange.timeframe,
+            "exchange": cfg.exchange.id, "candles": df.values.tolist(), "indicators": indicators,
+            "trades": trades, "position": position, "last_price": last_price, "now": now_ms(),
+        }
 
     # ----- backtests ----------------------------------------------------------------------
     def start_backtest(self, params: dict[str, Any]) -> dict[str, Any]:

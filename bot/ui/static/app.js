@@ -35,6 +35,7 @@
     if (b.dataset.tab === 'trades') loadTrades();
     if (b.dataset.tab === 'settings') loadSettings();
     if (b.dataset.tab === 'backtest') loadSamples();
+    if (b.dataset.tab === 'chart') loadChart();
   }));
 
   // ----- chart -----
@@ -314,7 +315,108 @@
     try { renderBacktest(await api('/api/backtest', body)); } catch (err) { showAlert(err.message); }
   });
 
+  // ----- price chart -----
+  const C = { up: '#0ca30c', down: '#d03b3b', emaFast: '#3987e5', emaSlow: '#d95926', grid: '#273241', text: '#8b98a8', last: '#e6edf3', stop: '#d03b3b', tp: '#0ca30c', entry: '#3987e5' };
+  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null };
+  const chartActive = () => document.querySelector('#tab-chart').classList.contains('active');
+  async function loadChart() {
+    try {
+      const limit = Number($('chart-limit').value);
+      const d = await api(`/api/candles?limit=${limit}`);
+      chart.data = d; chart.visible = Math.min(chart.visible, d.candles.length) || d.candles.length;
+      $('chart-empty').classList.add('hidden');
+      const src = { feed: 'live feed from the running bot', replay: 'demo replay data', exchange: 'public data, bot stopped' }[d.source] || d.source;
+      $('chart-title').textContent = `${d.exchange} · ${d.symbol} · ${d.timeframe}`;
+      $('chart-source').textContent = `${src} · ${d.candles.length} candles · updated ${new Date(d.now).toLocaleTimeString()}`;
+      renderChart();
+    } catch (e) {
+      $('chart-empty').classList.remove('hidden'); $('chart-empty').textContent = `Could not load candles: ${e.message}`;
+    }
+  }
+  function renderChart() {
+    const d = chart.data; const canvas = $('price-chart'); if (!d || !d.candles.length) return;
+    const dpr = window.devicePixelRatio || 1; const w = canvas.clientWidth || 800, h = 520;
+    canvas.width = w * dpr; canvas.height = h * dpr; const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
+    const showVol = $('chart-vol').checked, showEma = $('chart-ema').checked, showTrades = $('chart-trades').checked;
+    const n = d.candles.length, start = Math.max(0, n - chart.visible), rows = d.candles.slice(start);
+    const pad = { l: 8, r: 74, t: 10, b: 22 }; const volH = showVol ? 80 : 0;
+    const priceTop = pad.t, priceBot = h - pad.b - volH - (showVol ? 8 : 0), volTop = priceBot + 8, volBot = h - pad.b;
+    const plotW = w - pad.l - pad.r, slot = plotW / rows.length, bodyW = Math.max(1, Math.min(14, slot * 0.68));
+    let lo = Infinity, hi = -Infinity, vmax = 0;
+    rows.forEach((r) => { lo = Math.min(lo, r[3]); hi = Math.max(hi, r[2]); vmax = Math.max(vmax, r[5] || 0); });
+    const pos = d.position; if (pos) { [pos.stop_loss, pos.take_profit, pos.entry_price].forEach((v) => { if (v) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }); }
+    if (d.last_price) { lo = Math.min(lo, d.last_price); hi = Math.max(hi, d.last_price); }
+    const span = (hi - lo) || 1; lo -= span * 0.05; hi += span * 0.05;
+    const X = (i) => pad.l + (i + 0.5) * slot, Y = (p) => priceTop + (1 - (p - lo) / (hi - lo)) * (priceBot - priceTop);
+    chart.layout = { start, rows, slot, X, Y, pad, priceTop, priceBot, w, h };
+    // grid + price axis (recessive)
+    ctx.font = '11px system-ui'; ctx.textBaseline = 'middle';
+    const ticks = niceTicks(lo, hi, 6);
+    ticks.forEach((p) => { const y = Y(p); ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); ctx.fillStyle = C.text; ctx.textAlign = 'left'; ctx.fillText(fmt.money(p, p >= 100 ? 0 : 2), w - pad.r + 6, y); });
+    // time axis
+    const every = Math.max(1, Math.round(rows.length / Math.max(3, Math.floor(plotW / 110))));
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    const stepMs = rows.length > 1 ? (rows[rows.length - 1][0] - rows[0][0]) / (rows.length - 1) : 3600000;
+    const dateOnly = every * stepMs >= 86400000;
+    rows.forEach((r, i) => { if (i % every === 0) { const t = new Date(r[0]).toISOString(); const lbl = dateOnly ? t.slice(0, 10) : t.slice(5, 16).replace('T', ' '); const tw = ctx.measureText(lbl).width; const lx = Math.min(w - pad.r - tw / 2, Math.max(pad.l + tw / 2, X(i))); ctx.fillStyle = C.text; ctx.fillText(lbl, lx, h - 6); ctx.strokeStyle = C.grid; ctx.beginPath(); ctx.moveTo(X(i), priceTop); ctx.lineTo(X(i), volBot); ctx.stroke(); } });
+    // volume
+    if (showVol) rows.forEach((r, i) => { const up = r[4] >= r[1]; const vh = vmax ? (r[5] / vmax) * (volBot - volTop) : 0; ctx.fillStyle = up ? 'rgba(12,163,12,.35)' : 'rgba(208,59,59,.35)'; ctx.fillRect(X(i) - bodyW / 2, volBot - vh, bodyW, vh); });
+    // candles: up = hollow, down = filled (polarity is not color-alone)
+    rows.forEach((r, i) => {
+      const [ts, o, hh, ll, c] = r; const up = c >= o; const x = X(i); const col = up ? C.up : C.down;
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, Y(hh)); ctx.lineTo(x, Y(Math.max(o, c))); ctx.moveTo(x, Y(Math.min(o, c))); ctx.lineTo(x, Y(ll)); ctx.stroke();
+      const top = Y(Math.max(o, c)), bh = Math.max(1, Y(Math.min(o, c)) - top);
+      if (up) { ctx.lineWidth = 1.5; ctx.strokeRect(x - bodyW / 2, top, bodyW, bh); } else ctx.fillRect(x - bodyW / 2, top, bodyW, bh);
+    });
+    // EMA lines
+    const line = (arr, color) => { if (!arr) return; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); let started = false; rows.forEach((r, i) => { const v = arr[start + i]; if (v == null) return; const x = X(i), y = Y(v); started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true; }); ctx.stroke(); };
+    if (showEma && d.indicators) { line(d.indicators.ema_fast, C.emaFast); line(d.indicators.ema_slow, C.emaSlow); }
+    // horizontal levels: position + last price
+    const level = (p, color, label, dash) => { if (!p) return; const y = Y(p); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash(dash); ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = color; ctx.fillRect(w - pad.r + 1, y - 8, pad.r - 2, 16); ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = 'bold 11px system-ui'; ctx.fillText(label, w - pad.r + 5, y); ctx.font = '11px system-ui'; };
+    if (pos) { level(pos.stop_loss, C.stop, `SL ${fmt.money(pos.stop_loss, 0)}`, [5, 4]); level(pos.take_profit, C.tp, `TP ${fmt.money(pos.take_profit, 0)}`, [5, 4]); level(pos.entry_price, C.entry, `IN ${fmt.money(pos.entry_price, 0)}`, []); }
+    if (d.last_price) level(d.last_price, '#4b5563', fmt.money(d.last_price, 0), [2, 3]);
+    // trade markers (shape + label, color for P/L sign)
+    if (showTrades) {
+      const idxFor = (ts) => { let k = -1; for (let i = 0; i < rows.length; i++) { if (rows[i][0] <= ts) k = i; else break; } return k; };
+      ctx.textAlign = 'center'; ctx.font = 'bold 12px system-ui';
+      d.trades.forEach((t) => {
+        const ei = idxFor(t.entry_ts), xi = idxFor(t.exit_ts);
+        if (ei >= 0) { ctx.fillStyle = C.entry; ctx.textBaseline = 'top'; ctx.fillText('▲', X(ei), Y(rows[ei][3]) + 4); }
+        if (xi >= 0) { ctx.fillStyle = t.pnl >= 0 ? C.up : C.down; ctx.textBaseline = 'bottom'; ctx.fillText('▼', X(xi), Y(rows[xi][2]) - 4); ctx.font = '10px system-ui'; ctx.fillStyle = C.last; ctx.fillText(fmt.money(t.pnl, 0), X(xi), Y(rows[xi][2]) - 19); ctx.font = 'bold 12px system-ui'; }
+      });
+    }
+    if (chart.hover != null) drawCrosshair();
+  }
+  function niceTicks(lo, hi, count) { const raw = (hi - lo) / count; const mag = Math.pow(10, Math.floor(Math.log10(raw))); const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10; const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) out.push(v); return out; }
+  function drawCrosshair() {
+    const L = chart.layout, d = chart.data; if (!L || chart.hover == null) return;
+    const i = chart.hover, r = L.rows[i]; if (!r) return;
+    const canvas = $('price-chart'), ctx = canvas.getContext('2d'); const x = L.X(i);
+    ctx.save(); ctx.strokeStyle = '#8b98a8'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, L.priceTop); ctx.lineTo(x, L.h - L.pad.b); ctx.stroke(); ctx.restore();
+    const g = (k) => d.indicators && d.indicators[k] ? d.indicators[k][L.start + i] : null;
+    const chg = ((r[4] / r[1] - 1) * 100);
+    $('chart-tip').innerHTML = `<b>${fmt.time(r[0])}</b><br>O ${fmt.money(r[1])} &nbsp; H ${fmt.money(r[2])}<br>L ${fmt.money(r[3])} &nbsp; C <b class="${cls(chg)}">${fmt.money(r[4])}</b> (${fmt.pct(chg)})<br>Vol ${fmt.money(r[5], 1)}` + (g('ema_fast') != null ? `<br>EMA fast ${fmt.money(g('ema_fast'))} · slow ${fmt.money(g('ema_slow'))}<br>RSI ${g('rsi') == null ? '—' : g('rsi').toFixed(1)} · ATR ${fmt.money(g('atr'))}` : '');
+    const tip = $('chart-tip'); tip.classList.remove('hidden');
+    const left = x + 14 + 190 > L.w ? x - 14 - 190 : x + 14; tip.style.left = `${left}px`; tip.style.top = `${Math.max(4, L.priceTop + 4)}px`;
+  }
+  $('price-chart').addEventListener('mousemove', (e) => { const L = chart.layout; if (!L) return; const rect = e.currentTarget.getBoundingClientRect(); const i = Math.floor((e.clientX - rect.left - L.pad.l) / L.slot); if (i < 0 || i >= L.rows.length) return; if (i !== chart.hover) { chart.hover = i; renderChart(); } });
+  $('price-chart').addEventListener('mouseleave', () => { chart.hover = null; $('chart-tip').classList.add('hidden'); renderChart(); });
+  $('price-chart').addEventListener('wheel', (e) => { if (!chart.data) return; e.preventDefault(); const n = chart.data.candles.length; chart.visible = Math.max(30, Math.min(n, Math.round(chart.visible * (e.deltaY > 0 ? 1.2 : 0.83)))); renderChart(); }, { passive: false });
+  ['chart-ema', 'chart-vol', 'chart-trades'].forEach((id) => $(id).addEventListener('change', renderChart));
+  $('chart-limit').addEventListener('change', () => { chart.visible = Number($('chart-limit').value); loadChart(); });
+  $('chart-refresh').addEventListener('click', loadChart);
+  $('chart-tv').addEventListener('click', () => {
+    const wrap = $('tv-wrap'); const on = wrap.classList.toggle('hidden') === false; $('chart-tv').classList.toggle('on', on);
+    if (on && !wrap.firstChild) {
+      const c = status.config || {}; const sym = `${(c.exchange || 'binance').toUpperCase()}:${(c.symbol || 'BTC/USDT').replace('/', '').split(':')[0]}`;
+      const iv = { '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '2h': '120', '4h': '240', '6h': '360', '12h': '720', '1d': 'D', '1w': 'W' }[c.timeframe] || '60';
+      const f = document.createElement('iframe'); f.src = `https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=${iv}&theme=dark&style=1&locale=en&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=1`; f.allow = 'fullscreen'; wrap.appendChild(f);
+    }
+  });
+  function chartTick() { if (chartActive()) loadChart(); }
+
   // ----- boot -----
-  poll(); setInterval(poll, 2000);
-  window.addEventListener('resize', () => loadEquity());
+  poll(); setInterval(poll, 2000); setInterval(chartTick, 10000);
+  window.addEventListener('resize', () => { loadEquity(); renderChart(); });
 })();
