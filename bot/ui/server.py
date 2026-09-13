@@ -61,6 +61,12 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         except RuntimeError as exc:
             raise ApiError(409, str(exc)) from exc
 
+    def candles(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.candles(int(q.get("limit", 300)), q.get("timeframe") or None)
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+
     def quit_app(q: dict[str, Any], body: dict[str, Any]) -> Any:
         threading.Thread(target=c.quit, daemon=True).start()
         return {"ok": True}
@@ -70,12 +76,12 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         ("GET", "/api/events"): lambda q, b: {"events": c.events.since(int(q.get("since", 0)), int(q.get("limit", 500)))},
         ("GET", "/api/trades"): lambda q, b: {"trades": c.trades(int(q.get("limit", 500)))},
         ("GET", "/api/equity"): lambda q, b: {"equity": c.equity(int(q.get("limit", 2000)))},
-        ("GET", "/api/config"): lambda q, b: {"config": c.config_dict(), "yaml": c.config_yaml()},
+        ("GET", "/api/config"): lambda q, b: {"config": c.config_dict(), "yaml": c.config_yaml(), **c.config_meta()},
         ("POST", "/api/config"): save_config,
         ("GET", "/api/secrets"): lambda q, b: c.secrets_status(),
         ("POST", "/api/secrets"): lambda q, b: c.save_secrets(b),
         ("GET", "/api/samples"): lambda q, b: {"samples": c.samples()},
-        ("GET", "/api/candles"): lambda q, b: c.candles(int(q.get("limit", 300))),
+        ("GET", "/api/candles"): candles,
         ("POST", "/api/start"): start,
         ("POST", "/api/stop"): lambda q, b: c.stop(wait=float(b.get("wait", 0.0))),
         ("POST", "/api/kill"): lambda q, b: {"kill_switch": c.kill_switch(b.get("active"))},

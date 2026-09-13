@@ -210,3 +210,25 @@ def test_candles_endpoint_reports_exchange_failure(ui):
     c.market_factory = lambda cfg: Down()
     code, data = call(server, "/api/candles?limit=100")
     assert code == 500 and "unreachable" in data["error"]
+
+
+def test_candles_timeframe_selection_and_config_meta(ui):
+    root, c, server = ui
+    from tests.test_feed import FakeMarket
+
+    class RecordingMarket(FakeMarket):
+        def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None):
+            self.timeframes = getattr(self, "timeframes", []) + [timeframe]
+            return super().fetch_ohlcv(symbol, timeframe, since, limit)
+
+    fake = RecordingMarket(make_ohlcv(trending_series(), spread=0.003))
+    c.market_factory = lambda cfg: fake
+    code, data = call(server, "/api/candles?limit=80&timeframe=15m")
+    assert code == 200 and data["timeframe"] == "15m" and data["bot_timeframe"] == "1h" and fake.timeframes == ["15m"]
+    code, data = call(server, "/api/candles?limit=80")
+    assert code == 200 and data["timeframe"] == "1h" and fake.timeframes == ["15m", "1h"]
+    code, err = call(server, "/api/candles?timeframe=7x")
+    assert code == 400 and "timeframe" in err["error"]
+    meta = call(server, "/api/config")[1]
+    assert "ema_rsi" in meta["strategies"] and "1h" in meta["timeframes"] and "binance" in meta["exchanges"]
+    assert call(server, "/api/status")[1]["paths"]["temporary"] in (True, False)

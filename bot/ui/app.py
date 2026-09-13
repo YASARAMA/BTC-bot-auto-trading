@@ -17,7 +17,7 @@ import yaml
 
 from bot.backtest.__main__ import format_report
 from bot.backtest.engine import run_backtest
-from bot.common import now_ms, parse_date_ms
+from bot.common import now_ms, parse_date_ms, timeframe_to_ms
 from bot.config import (
     DOTENV_KEYS,
     BotConfig,
@@ -29,13 +29,21 @@ from bot.config import (
 )
 from bot.data.feed import rows_to_frame
 from bot.data.history import cache_path, download_ohlcv, load_csv
-from bot.strategy import get_strategy
+from bot.strategy import STRATEGIES, get_strategy
 from bot.logging_utils import EventBufferHandler, log_event
 from bot.main import Runtime, build_runtime, run_loop
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
+TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
+EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
+
+
+def looks_temporary(path: Path) -> bool:
+    """True when the app runs from a temp/extraction folder, where its files will not survive."""
+    parts = [p.lower() for p in path.parts]
+    return any(p in ("temp", "tmp") or p.startswith("rar$") or p.startswith("7z") for p in parts)
 
 
 def is_frozen() -> bool:
@@ -122,6 +130,9 @@ class BotController:
 
     def config_dict(self) -> dict[str, Any]:
         return self.load_cfg().printable()
+
+    def config_meta(self) -> dict[str, Any]:
+        return {"strategies": sorted(STRATEGIES), "timeframes": TIMEFRAMES, "exchanges": EXCHANGES}
 
     def config_yaml(self) -> str:
         return self.config_path.read_text(encoding="utf-8")
@@ -314,7 +325,7 @@ class BotController:
             "alerts": self.recent_alerts[-10:],
             "backtest_state": self.backtest.get("state"),
             "paths": {"root": str(self.root), "config": str(self.config_path), "db": str(self.db_path()),
-                      "log": str(self.root / "data" / "bot.log")},
+                      "log": str(self.root / "data" / "bot.log"), "temporary": looks_temporary(self.root)},
             "now": now_ms(),
         }
 
@@ -363,14 +374,16 @@ class BotController:
         return out
 
     # ----- chart ---------------------------------------------------------------------------
-    def _chart_rows(self, cfg: BotConfig, limit: int) -> tuple[list[list[float]], str]:
-        """Candles for the chart: the running bot's window, else a fresh public fetch (cached 20 s)."""
+    def _chart_rows(self, cfg: BotConfig, limit: int, timeframe: str) -> tuple[list[list[float]], str]:
+        """Candles for the chart: the running bot's window when the timeframe matches, else a
+        public fetch from the exchange (cached 20 s)."""
         rt = self.runtime
-        if rt is not None and self.state == "running" and rt.feed.latest_ts is not None:
+        if (rt is not None and self.state == "running" and rt.feed.latest_ts is not None
+                and timeframe == rt.cfg.exchange.timeframe):
             df = rt.feed.candles().tail(limit)
             source = "replay" if rt.replay is not None else "feed"
             return df[["ts", "open", "high", "low", "close", "volume"]].values.tolist(), source
-        key = f"{cfg.exchange.id}:{cfg.exchange.symbol}:{cfg.exchange.timeframe}:{limit}"
+        key = f"{cfg.exchange.id}:{cfg.exchange.symbol}:{timeframe}:{limit}"
         with self._chart_lock:
             hit = self._chart_cache.get(key)
             if hit and now_ms() - hit["at"] < 20_000:
@@ -382,15 +395,19 @@ class BotController:
 
             quick = cfg.exchange.model_copy(update={"max_retries": 1, "backoff_base_seconds": 0.5, "backoff_max_seconds": 1.0})
             market = LiveExchange(quick, None)
-        rows = market.fetch_ohlcv(cfg.exchange.symbol, cfg.exchange.timeframe, None, limit)
+        rows = market.fetch_ohlcv(cfg.exchange.symbol, timeframe, None, limit)
         with self._chart_lock:
             self._chart_cache[key] = {"at": now_ms(), "rows": rows}
         return rows, "exchange"
 
-    def candles(self, limit: int = 300) -> dict[str, Any]:
+    def candles(self, limit: int = 300, timeframe: str | None = None) -> dict[str, Any]:
         cfg = self.load_cfg()
         limit = max(50, min(int(limit), 1000))
-        rows, source = self._chart_rows(cfg, limit)
+        rt = self.runtime
+        bot_tf = rt.cfg.exchange.timeframe if (rt is not None and self.state == "running") else cfg.exchange.timeframe
+        tf = (timeframe or bot_tf).strip()
+        timeframe_to_ms(tf)  # raises ValueError on garbage
+        rows, source = self._chart_rows(cfg, limit, tf)
         df = rows_to_frame(rows)
         indicators: dict[str, list[float | None]] = {}
         try:
@@ -412,7 +429,7 @@ class BotController:
             position = None
         last_price = self.last_cycle.get("price") if self.state == "running" else None
         return {
-            "source": source, "symbol": cfg.exchange.symbol, "timeframe": cfg.exchange.timeframe,
+            "source": source, "symbol": cfg.exchange.symbol, "timeframe": tf, "bot_timeframe": bot_tf,
             "exchange": cfg.exchange.id, "candles": df.values.tolist(), "indicators": indicators,
             "trades": trades, "position": position, "last_price": last_price, "now": now_ms(),
         }

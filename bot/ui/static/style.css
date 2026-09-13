@@ -88,7 +88,12 @@ table.data .num { text-align: right; }
 .form label.inline { flex-direction: row; }
 .form .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .form .row label { flex: 1; min-width: 140px; }
-.form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.form fieldset { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px 14px; margin: 0; }
+.form fieldset label.check { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 10px; padding: 6px 8px; background: #0c1116; border: 1px solid var(--border); border-radius: 6px; }
+.form fieldset label.check input { margin: 0; width: 16px; height: 16px; }
+.form fieldset label .name { color: var(--text); font-weight: 500; }
+.form fieldset label .help { color: var(--muted); font-size: 11px; line-height: 1.3; }
+.form fieldset legend .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
 .form legend { color: var(--text); font-weight: 600; padding: 0 6px; }
 label.inline { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; color: var(--muted); font-size: 12px; }
 .report { background: #0c1116; border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 12px; overflow-x: auto; }
@@ -123,3 +128,9 @@ dialog .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 1
 button.ghost.on { border-color: var(--accent); color: var(--accent); }
 .live-badge { color: #0ca30c; border-color: #0ca30c; }
 .live-badge.reconnecting { color: var(--amber); border-color: var(--amber); }
+.alert.warn { background: #3a2f12; border-color: #7a5d1a; color: #ffe6a8; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 10px; background: transparent; color: var(--muted); font-size: 12px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.seg button.bot::after { content: " •"; color: var(--accent); }

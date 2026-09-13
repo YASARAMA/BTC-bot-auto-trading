@@ -124,6 +124,7 @@
     const alerts = (s.alerts || []).slice().reverse();
     $('alerts').innerHTML = alerts.length ? alerts.map((a) => `<li><span class="t">${fmt.ts(a.ts)}</span><span>${describe(a)}</span></li>`).join('') : '<li class="muted">Nothing yet.</li>';
     $('version').textContent = `BTC Bot ${s.version}`; $('log-file').textContent = s.paths ? s.paths.log : '';
+    const tw = $('temp-warning'); if (s.paths && s.paths.temporary) { tw.textContent = `You are running the app from a temporary folder (${s.paths.root}). Settings, keys and trade history saved here can disappear. Extract the zip to a permanent folder such as C:\\BTCBot and start it from there.`; tw.classList.remove('hidden'); } else tw.classList.add('hidden');
     if (s.paths) $('env-path').textContent = s.secrets.env_file;
   }
   function describe(a) {
@@ -222,6 +223,31 @@
   });
 
   // ----- settings -----
+  const SECTION_TITLES = { exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
+  const FIELD_SPEC = {
+    'exchange.id': { label: 'Exchange', type: 'suggest', meta: 'exchanges' }, 'exchange.symbol': { label: 'Market (BASE/QUOTE)' },
+    'exchange.timeframe': { label: 'Timeframe the bot trades on', type: 'select', meta: 'timeframes' },
+    'exchange.live': { label: 'Live trading switch (config)', help: 'real orders also need LIVE_TRADING in the keys panel on the right' },
+    'exchange.sandbox': { label: 'Use the exchange testnet', help: 'where ccxt supports it' },
+    'exchange.fee_rate': { label: 'Taker fee (fraction)' }, 'exchange.slippage_bps': { label: 'Simulated slippage (bps)' },
+    'exchange.candle_history': { label: 'Candles kept for indicators' }, 'exchange.poll_interval_seconds': { label: 'Poll interval (s)' },
+    'exchange.candle_close_grace_seconds': { label: 'Wait after candle close (s)' }, 'exchange.order_timeout_seconds': { label: 'Order timeout (s)' },
+    'exchange.order_poll_seconds': { label: 'Order status poll (s)' }, 'exchange.max_retries': { label: 'Network retries' },
+    'exchange.backoff_base_seconds': { label: 'Retry backoff base (s)' }, 'exchange.backoff_max_seconds': { label: 'Retry backoff max (s)' },
+    'strategy.name': { label: 'Strategy', type: 'select', meta: 'strategies' },
+    'strategy.params.ema_fast': { label: 'EMA fast period' }, 'strategy.params.ema_slow': { label: 'EMA slow period' }, 'strategy.params.rsi_period': { label: 'RSI period' },
+    'strategy.params.rsi_buy_min': { label: 'RSI minimum to buy' }, 'strategy.params.rsi_buy_max': { label: 'RSI maximum to buy' }, 'strategy.params.rsi_midline': { label: 'RSI midline (confirmation)' },
+    'strategy.params.atr_period': { label: 'ATR period' }, 'strategy.params.atr_stop_mult': { label: 'Stop loss (× ATR)' }, 'strategy.params.atr_tp_mult': { label: 'Take profit (× ATR)' },
+    'strategy.params.trend_lookback': { label: 'Trend lookback (candles)' }, 'strategy.params.confidence_base': { label: 'Confidence base' }, 'strategy.params.confidence_per_confirmation': { label: 'Confidence per confirmation' }, 'strategy.params.warmup_factor': { label: 'Warmup factor' },
+    'risk.risk_per_trade_pct': { label: 'Risk per trade (% of equity)' }, 'risk.max_position_pct': { label: 'Max position (% of equity)' }, 'risk.max_daily_loss_pct': { label: 'Max daily loss (%)' },
+    'risk.max_consecutive_losses': { label: 'Losses in a row before cooldown' }, 'risk.cooldown_minutes': { label: 'Cooldown (minutes)' }, 'risk.min_seconds_between_trades': { label: 'Min seconds between entries' },
+    'risk.min_confidence': { label: 'Minimum signal confidence' }, 'risk.min_order_notional': { label: 'Minimum order size (quote)' }, 'risk.kill_switch_file': { label: 'Kill switch file' },
+    'paper.initial_cash': { label: 'Starting cash' }, 'paper.initial_base': { label: 'Starting coins' },
+    'notify.on_fill': { label: 'Notify on fills' }, 'notify.on_halt': { label: 'Notify on halts and cooldowns' }, 'notify.on_error': { label: 'Notify on errors' }, 'notify.timeout_seconds': { label: 'Webhook timeout (s)' },
+    'logging.level': { label: 'Log level', type: 'select', options: ['DEBUG', 'INFO', 'WARNING', 'ERROR'] }, 'logging.format': { label: 'Log format', type: 'select', options: ['json', 'text'] },
+    'state.db_path': { label: 'Database file' },
+  };
+  let cfgMeta = { strategies: [], timeframes: [], exchanges: [] };
   const FIELD_HELP = {
     'exchange.id': 'ccxt exchange id (binance, kraken, coinbase, bybit, okx…)', 'exchange.symbol': 'BASE/QUOTE', 'exchange.timeframe': 'candle size (1m, 5m, 15m, 1h, 4h, 1d)',
     'exchange.live': 'ON + LIVE_TRADING in keys = real orders', 'exchange.fee_rate': 'taker fee as a fraction, 0.001 = 0.1%', 'exchange.slippage_bps': 'simulated slippage in basis points',
@@ -234,15 +260,29 @@
   function renderCfg(cfg) {
     cfgData = cfg; const form = $('cfg-form'); form.innerHTML = '';
     SECTIONS.forEach((sec) => {
-      const fs = document.createElement('fieldset'); const lg = document.createElement('legend'); lg.textContent = sec; fs.appendChild(lg);
+      const fs = document.createElement('fieldset'); const lg = document.createElement('legend'); const [title, sub] = SECTION_TITLES[sec] || [sec, '']; lg.innerHTML = `${title}${sub ? `<span class="sub">${sub}</span>` : ''}`; fs.appendChild(lg);
       const obj = cfg[sec] || {};
       const addField = (path, key, val) => {
-        const lab = document.createElement('label'); const help = FIELD_HELP[path];
-        lab.innerHTML = `${key}${help ? ` <span class="small">· ${help}</span>` : ''}`;
+        const spec = FIELD_SPEC[path] || {}; const help = spec.help || FIELD_HELP[path] || ''; const name = spec.label || key;
+        const lab = document.createElement('label');
         let input;
-        if (typeof val === 'boolean') { input = document.createElement('input'); input.type = 'checkbox'; input.checked = val; lab.classList.add('check'); }
-        else { input = document.createElement('input'); input.type = typeof val === 'number' ? 'number' : 'text'; input.value = val; if (typeof val === 'number') input.step = 'any'; }
-        input.dataset.path = path; input.dataset.type = typeof val; lab.appendChild(input); fs.appendChild(lab);
+        if (typeof val === 'boolean') {
+          input = document.createElement('input'); input.type = 'checkbox'; input.checked = val; lab.classList.add('check');
+          lab.appendChild(input); const txt = document.createElement('span'); txt.innerHTML = `<span class="name">${name}</span>${help ? ` <span class="help">· ${help}</span>` : ''} <span class="help">(${path})</span>`; lab.appendChild(txt);
+        } else {
+          const options = spec.options || (spec.meta ? cfgMeta[spec.meta] : null);
+          lab.innerHTML = `<span class="name">${name}</span>`;
+          if (spec.type === 'select' && options && options.length) {
+            input = document.createElement('select'); options.forEach((o) => { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; input.appendChild(opt); });
+            if (!options.includes(String(val))) { const opt = document.createElement('option'); opt.value = val; opt.textContent = val; input.appendChild(opt); }
+            input.value = String(val);
+          } else {
+            input = document.createElement('input'); input.type = typeof val === 'number' ? 'number' : 'text'; input.value = val; if (typeof val === 'number') input.step = 'any';
+            if (spec.type === 'suggest' && options && options.length) { const dl = document.createElement('datalist'); dl.id = `dl-${path.replace(/\./g, '-')}`; options.forEach((o) => { const opt = document.createElement('option'); opt.value = o; dl.appendChild(opt); }); lab.appendChild(dl); input.setAttribute('list', dl.id); }
+          }
+          lab.appendChild(input); const h = document.createElement('span'); h.className = 'help'; h.textContent = help ? `${help} · ${path}` : path; lab.appendChild(h);
+        }
+        input.dataset.path = path; input.dataset.type = typeof val; fs.appendChild(lab);
       };
       Object.entries(obj).forEach(([k, v]) => {
         if (k === 'params' && v && typeof v === 'object') Object.entries(v).forEach(([pk, pv]) => addField(`${sec}.params.${pk}`, pk, pv));
@@ -253,7 +293,7 @@
   }
   function collectCfg() {
     const out = JSON.parse(JSON.stringify(cfgData));
-    $('cfg-form').querySelectorAll('input[data-path]').forEach((inp) => {
+    $('cfg-form').querySelectorAll('input[data-path], select[data-path]').forEach((inp) => {
       const parts = inp.dataset.path.split('.'); let cur = out;
       for (let i = 0; i < parts.length - 1; i++) cur = cur[parts[i]];
       const k = parts[parts.length - 1];
@@ -262,7 +302,7 @@
     return out;
   }
   async function loadSettings() {
-    try { const { config } = await api('/api/config'); renderCfg(config); } catch (e) { showAlert(e.message); }
+    try { const r = await api('/api/config'); cfgMeta = { strategies: r.strategies || [], timeframes: r.timeframes || [], exchanges: r.exchanges || [] }; renderCfg(r.config); } catch (e) { showAlert(e.message); }
     try {
       const s = await api('/api/secrets');
       $('sec-key-state').textContent = s.api_key_set ? 'saved' : 'not set'; $('sec-secret-state').textContent = s.api_secret_set ? 'saved' : 'not set';
@@ -318,16 +358,19 @@
 
   // ----- price chart -----
   const C = { up: '#0ca30c', down: '#d03b3b', emaFast: '#3987e5', emaSlow: '#d95926', grid: '#273241', text: '#8b98a8', last: '#e6edf3', stop: '#d03b3b', tp: '#0ca30c', entry: '#3987e5' };
-  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null, live: null, wsClosed: {}, ws: null, wsKey: null, wsRetry: 0, lastDraw: 0, lastMsg: 0 };
+  const chart = { data: null, visible: 200, timer: null, hover: null, layout: null, live: null, wsClosed: {}, ws: null, wsKey: null, wsRetry: 0, lastDraw: 0, lastMsg: 0, tf: null };
+  const CHART_TFS = ['1m', '5m', '15m', '1h', '4h', '1d'];
   window.__btcbot = { chart };
   const chartActive = () => document.querySelector('#tab-chart').classList.contains('active');
   async function loadChart() {
     try {
       const limit = Number($('chart-limit').value);
-      const d = await api(`/api/candles?limit=${limit}`);
+      const d = await api(`/api/candles?limit=${limit}${chart.tf ? `&timeframe=${chart.tf}` : ''}`);
+      renderTfControl(d.timeframe, d.bot_timeframe);
+      if (chart.data && chart.data.timeframe !== d.timeframe) { chart.live = null; chart.wsClosed = {}; }
       chart.data = d; chart.visible = Math.min(chart.visible, d.candles.length) || d.candles.length;
       $('chart-empty').classList.add('hidden');
-      const src = { feed: 'live feed from the running bot', replay: 'demo replay data', exchange: 'public data, bot stopped' }[d.source] || d.source;
+      const src = { feed: 'live feed from the running bot', replay: 'demo replay data', exchange: d.timeframe === d.bot_timeframe ? 'public exchange data' : `public exchange data (bot trades on ${d.bot_timeframe})` }[d.source] || d.source;
       $('chart-title').textContent = `${d.exchange} · ${d.symbol} · ${d.timeframe}`;
       $('chart-source').textContent = `${src} · ${d.candles.length} candles · updated ${new Date(d.now).toLocaleTimeString()}`;
       const lastTs = d.candles.length ? d.candles[d.candles.length - 1][0] : 0;
@@ -431,12 +474,17 @@
     }
   });
   function chartTick() { if (chartActive()) loadChart(); }
+  function renderTfControl(active, botTf) {
+    const box = $('chart-tf'); const tfs = CHART_TFS.includes(botTf) ? CHART_TFS : [botTf, ...CHART_TFS];
+    box.innerHTML = tfs.map((tf) => `<button data-tf="${tf}" class="${tf === active ? 'active' : ''} ${tf === botTf ? 'bot' : ''}" title="${tf === botTf ? 'the bot trades on this timeframe' : ''}">${tf}</button>`).join('');
+    box.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { chart.tf = b.dataset.tf; chart.visible = Number($('chart-limit').value); loadChart(); }));
+  }
 
   // ----- realtime stream (Binance public WebSocket, no keys) -----
   const BINANCE_WS = 'wss://stream.binance.com:9443/ws/';
   function streamKey(d) { return d.exchange === 'binance' ? `${d.symbol.replace('/', '').split(':')[0].toLowerCase()}@kline_${d.timeframe}` : null; }
   function setLiveBadge(state) { const b = $('chart-live'); b.classList.toggle('hidden', state === 'off'); b.classList.toggle('reconnecting', state === 'reconnecting'); b.textContent = state === 'reconnecting' ? '● reconnecting' : `● LIVE${chart.lastMsg ? ' ' + new Date(chart.lastMsg).toLocaleTimeString() : ''}`; }
-  function ensureStream() { const c = status.config || {}; if (c.exchange && c.symbol && c.timeframe && !(chart.ws && chart.ws.readyState <= 1)) connectStream({ exchange: c.exchange, symbol: c.symbol, timeframe: c.timeframe }); }
+  function ensureStream() { const c = status.config || {}; if (c.exchange && c.symbol && c.timeframe && !(chart.ws && chart.ws.readyState <= 1)) connectStream({ exchange: c.exchange, symbol: c.symbol, timeframe: chart.tf || c.timeframe }); }
   function connectStream(d) {
     const key = streamKey(d);
     if (!key || !window.WebSocket) { disconnectStream(); return; }
