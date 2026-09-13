@@ -134,3 +134,5 @@ button.ghost.on { border-color: var(--accent); color: var(--accent); }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
 .seg button.bot::after { content: " •"; color: var(--accent); }
+.alert.info button.small-btn { padding: 4px 10px; margin-left: 8px; }
+.alert.info a { color: #d0e4ff; margin-left: 8px; }

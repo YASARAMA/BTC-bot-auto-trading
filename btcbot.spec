@@ -10,6 +10,9 @@ datas = [
     ("bot/ui/static", "bot/ui/static"),
 ]
 datas += collect_data_files("certifi")
+import os as _os
+if _os.path.exists("bot/ui/build_info.json"):
+    datas.append(("bot/ui/build_info.json", "bot/ui"))
 try:
     datas += collect_data_files("webview")
 except Exception:  # pywebview not installed on this platform

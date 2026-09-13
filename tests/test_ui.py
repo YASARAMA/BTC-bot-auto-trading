@@ -232,3 +232,21 @@ def test_candles_timeframe_selection_and_config_meta(ui):
     meta = call(server, "/api/config")[1]
     assert "ema_rsi" in meta["strategies"] and "1h" in meta["timeframes"] and "binance" in meta["exchanges"]
     assert call(server, "/api/status")[1]["paths"]["temporary"] in (True, False)
+
+
+def test_update_endpoints(ui):
+    root, c, server = ui
+    from tests.test_updater import release
+
+    code, st = call(server, "/api/update")
+    assert code == 200 and st["current"]["version"] and st["latest"] is None and st["can_install"] is False
+    c.updater.fetch_json = lambda url, token: release(tag="v99.0.0-build.1")
+    code, st = call(server, "/api/update", {"action": "check"})
+    assert code == 200 and st["available"] is True and st["latest"]["tag"] == "v99.0.0-build.1"
+    assert call(server, "/api/status")[1]["update"]["available"] is True
+    assert any(a.get("event") == "update_available" for a in c.recent_alerts)
+    code, err = call(server, "/api/update", {"action": "install"})
+    assert code == 400 and "packaged app" in err["error"]  # tests run from source
+    assert call(server, "/api/update", {"action": "bogus"})[0] == 400
+    cfg = call(server, "/api/config")[1]["config"]
+    assert cfg["update"]["auto_install"] is True and cfg["update"]["repo"].startswith("YASARAMA/")

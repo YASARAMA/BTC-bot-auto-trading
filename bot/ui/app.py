@@ -32,10 +32,11 @@ from bot.data.history import cache_path, download_ohlcv, load_csv
 from bot.strategy import STRATEGIES, get_strategy
 from bot.logging_utils import EventBufferHandler, log_event
 from bot.main import Runtime, build_runtime, run_loop
+from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -111,6 +112,18 @@ class BotController:
         self._chart_cache: dict[str, Any] = {}
         self._chart_lock = threading.Lock()
         self.market_factory: Any = None  # tests inject a fake market data source here
+        self.build_info = read_build_info(bundle_dir(), VERSION)
+        current = Version.parse(f"v{self.build_info['version']}-build.{self.build_info['build']}") or Version.parse(f"v{VERSION}")
+        try:
+            repo = self.load_cfg().update.repo
+        except Exception:  # noqa: BLE001
+            repo = "YASARAMA/BTC-bot-auto-trading"
+        self.updater = Updater(
+            repo=repo, current=current, app_dir=self.root,
+            exe_path=Path(sys.executable) if is_frozen() else None, frozen=is_frozen(),
+            token_getter=lambda: os.environ.get("GITHUB_TOKEN") or None, on_event=self._update_event,
+        )
+        self._notifier: Any = None
 
     # ----- config ------------------------------------------------------------------------
     def load_cfg(self) -> BotConfig:
@@ -249,6 +262,49 @@ class BotController:
             thread.join(wait)
         return self.status()
 
+    def _update_event(self, info: dict[str, Any]) -> None:
+        latest = info.get("latest") or {}
+        if info.get("event") == "update_available":
+            text = f"Update available: {latest.get('label')} (running {info.get('current')})"
+        else:
+            text = f"Update installed: {latest.get('label')}; restarting"
+        log_event(log, info.get("event", "update"), level=logging.WARNING, detail=text, tag=latest.get("tag"))
+        self.recent_alerts = (self.recent_alerts + [{"event": info.get("event"), "ts": None, "detail": text,
+                                                     "label": latest.get("label"), "tag": latest.get("tag")}])[-30:]
+        try:
+            from bot.notify.notifier import Notifier
+
+            Notifier(self.load_cfg().notify, load_secrets(), prefix="[BTC Bot] ").send(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def start_updater(self) -> None:
+        try:
+            cfg = self.load_cfg()
+        except Exception:  # noqa: BLE001
+            return
+        if not cfg.update.enabled:
+            return
+        self.updater.repo = cfg.update.repo
+        self.updater.cleanup_old()
+        self.updater.start_background(
+            cfg.update.check_interval_minutes,
+            auto_install=lambda: self._auto_install_allowed(),
+            before_restart=lambda: self.stop(wait=20.0),
+        )
+
+    def _auto_install_allowed(self) -> bool:
+        try:
+            return bool(self.load_cfg().update.auto_install) and self.state in ("stopped", "error")
+        except Exception:  # noqa: BLE001
+            return False
+
+    def install_update(self) -> dict[str, Any]:
+        """Manual install: stops the bot, swaps the executable, restarts, then this process quits."""
+        result = self.updater.install(before_restart=lambda: self.stop(wait=20.0))
+        threading.Thread(target=self.quit, daemon=True).start()
+        return result
+
     def _on_event(self, item: dict[str, Any]) -> None:
         ev = item.get("event")
         if ev == "cycle":
@@ -324,6 +380,7 @@ class BotController:
             "decision": last.get("decision"),
             "alerts": self.recent_alerts[-10:],
             "backtest_state": self.backtest.get("state"),
+            "update": {**self.updater.status(), "build_info": self.build_info},
             "paths": {"root": str(self.root), "config": str(self.config_path), "db": str(self.db_path()),
                       "log": str(self.root / "data" / "bot.log"), "temporary": looks_temporary(self.root)},
             "now": now_ms(),
@@ -501,4 +558,5 @@ class BotController:
     # ----- shutdown -----------------------------------------------------------------------
     def quit(self, wait: float = 15.0) -> None:
         self.stop(wait=wait)
+        self.updater.stop()
         self.quit_event.set()

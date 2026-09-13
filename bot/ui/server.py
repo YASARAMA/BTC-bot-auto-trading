@@ -67,6 +67,19 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         except ValueError as exc:
             raise ApiError(400, str(exc)) from exc
 
+    def update_action(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        action = body.get("action", "check")
+        if action == "check":
+            return c.updater.check()
+        if action == "install":
+            try:
+                return c.install_update()
+            except RuntimeError as exc:
+                raise ApiError(400, str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ApiError(500, f"update failed: {type(exc).__name__}: {exc}") from exc
+        raise ApiError(400, f"unknown update action {action!r}")
+
     def quit_app(q: dict[str, Any], body: dict[str, Any]) -> Any:
         threading.Thread(target=c.quit, daemon=True).start()
         return {"ok": True}
@@ -88,6 +101,8 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         ("GET", "/api/backtest"): lambda q, b: c.backtest_status(),
         ("POST", "/api/backtest"): start_backtest,
         ("POST", "/api/quit"): quit_app,
+        ("GET", "/api/update"): lambda q, b: c.updater.status(),
+        ("POST", "/api/update"): update_action,
     }
 
 

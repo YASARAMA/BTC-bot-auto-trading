@@ -101,6 +101,13 @@ class NotifyConfig(StrictModel):
     timeout_seconds: float = Field(10.0, gt=0.0)
 
 
+class UpdateConfig(StrictModel):
+    enabled: bool = True
+    auto_install: bool = Field(True, description="install a new build automatically while the bot is stopped")
+    check_interval_minutes: float = Field(15.0, ge=1.0)
+    repo: str = "YASARAMA/BTC-bot-auto-trading"
+
+
 class LoggingConfig(StrictModel):
     level: str = "INFO"
     format: Literal["json", "text"] = "json"
@@ -114,6 +121,7 @@ class BotConfig(StrictModel):
     state: StateConfig = Field(default_factory=StateConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
 
     def printable(self) -> dict[str, Any]:
         """Config as a dict. It holds no secrets by construction, so it is safe to log."""
@@ -156,7 +164,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BotConfig:
 
 
 DOTENV_KEYS = ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "EXCHANGE_API_PASSWORD", "LIVE_TRADING",
-               "BOT_CONFIG", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL")
+               "BOT_CONFIG", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "GITHUB_TOKEN")
 
 
 def read_dotenv(path: str | os.PathLike[str]) -> dict[str, str]:

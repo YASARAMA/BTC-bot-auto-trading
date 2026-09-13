@@ -124,11 +124,14 @@
     const alerts = (s.alerts || []).slice().reverse();
     $('alerts').innerHTML = alerts.length ? alerts.map((a) => `<li><span class="t">${fmt.ts(a.ts)}</span><span>${describe(a)}</span></li>`).join('') : '<li class="muted">Nothing yet.</li>';
     $('version').textContent = `BTC Bot ${s.version}`; $('log-file').textContent = s.paths ? s.paths.log : '';
+    renderUpdate(s.update);
     const tw = $('temp-warning'); if (s.paths && s.paths.temporary) { tw.textContent = `You are running the app from a temporary folder (${s.paths.root}). Settings, keys and trade history saved here can disappear. Extract the zip to a permanent folder such as C:\\BTCBot and start it from there.`; tw.classList.remove('hidden'); } else tw.classList.add('hidden');
     if (s.paths) $('env-path').textContent = s.secrets.env_file;
   }
   function describe(a) {
     switch (a.event) {
+      case 'update_available': return `<span class="pos">${a.detail}</span>`;
+      case 'update_installed': return `<span class="pos">${a.detail}</span>`;
       case 'position_opened': return `Opened ${fmt.qty(a.qty)} @ ${fmt.money(a.entry_price)} (stop ${fmt.money(a.stop_loss)}, tp ${fmt.money(a.take_profit)})`;
       case 'trade_closed': return `<span class="${cls(a.pnl)}">Closed ${a.exit_reason}: P/L ${fmt.money(a.pnl)} (${fmt.pct(a.pnl_pct)})</span>`;
       case 'risk_event': return `<span class="neg">Risk: ${a.detail}</span>`;
@@ -223,7 +226,7 @@
   });
 
   // ----- settings -----
-  const SECTION_TITLES = { exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
+  const SECTION_TITLES = { update: ['Updates', 'self-update from GitHub releases'], exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
   const FIELD_SPEC = {
     'exchange.id': { label: 'Exchange', type: 'suggest', meta: 'exchanges' }, 'exchange.symbol': { label: 'Market (BASE/QUOTE)' },
     'exchange.timeframe': { label: 'Timeframe the bot trades on', type: 'select', meta: 'timeframes' },
@@ -246,6 +249,8 @@
     'notify.on_fill': { label: 'Notify on fills' }, 'notify.on_halt': { label: 'Notify on halts and cooldowns' }, 'notify.on_error': { label: 'Notify on errors' }, 'notify.timeout_seconds': { label: 'Webhook timeout (s)' },
     'logging.level': { label: 'Log level', type: 'select', options: ['DEBUG', 'INFO', 'WARNING', 'ERROR'] }, 'logging.format': { label: 'Log format', type: 'select', options: ['json', 'text'] },
     'state.db_path': { label: 'Database file' },
+    'update.enabled': { label: 'Check GitHub for new builds' }, 'update.auto_install': { label: 'Install updates automatically while the bot is stopped' },
+    'update.check_interval_minutes': { label: 'Check interval (minutes)' }, 'update.repo': { label: 'GitHub repository (owner/name)' },
   };
   let cfgMeta = { strategies: [], timeframes: [], exchanges: [] };
   const FIELD_HELP = {
@@ -255,7 +260,7 @@
     'risk.max_consecutive_losses': 'losses in a row before a cooldown', 'risk.cooldown_minutes': 'cooldown length', 'risk.min_seconds_between_trades': 'minimum spacing between entries',
     'risk.min_confidence': 'signals below this confidence are ignored', 'risk.kill_switch_file': 'file that blocks all orders while it exists', 'paper.initial_cash': 'starting cash for paper trading',
   };
-  const SECTIONS = ['exchange', 'strategy', 'risk', 'paper', 'notify', 'logging', 'state'];
+  const SECTIONS = ['exchange', 'strategy', 'risk', 'paper', 'notify', 'update', 'logging', 'state'];
   let cfgData = null;
   function renderCfg(cfg) {
     cfgData = cfg; const form = $('cfg-form'); form.innerHTML = '';
@@ -355,6 +360,35 @@
     const body = { csv: $('bt-source').value || null, from: $('bt-from').value || null, to: $('bt-to').value || null, cash: $('bt-cash').value || null };
     try { renderBacktest(await api('/api/backtest', body)); } catch (err) { showAlert(err.message); }
   });
+
+  // ----- updates -----
+  let updating = false;
+  function renderUpdate(u) {
+    if (!u) return;
+    const banner = $('update-banner');
+    if (u.available && !updating) {
+      $('update-text').textContent = `New version ${u.latest.label} is available (you run ${u.current.label}).` + (u.can_install ? (status.state === 'running' ? ' The bot will be stopped, updated and restarted.' : '') : ' Running from source: git pull to update.');
+      $('update-install').classList.toggle('hidden', !u.can_install); $('update-notes').href = u.latest.url || '#';
+      banner.classList.remove('hidden');
+    } else if (!updating) banner.classList.add('hidden');
+    const bi = u.build_info || {};
+    $('upd-current').textContent = `${u.current.label}${bi.commit ? ' · ' + String(bi.commit).slice(0, 7) : ''}${bi.built_at ? ' · ' + String(bi.built_at).slice(0, 16).replace('T', ' ') : ''}`;
+    $('upd-latest').textContent = u.latest ? `${u.latest.label}${u.latest.published_at ? ' · ' + u.latest.published_at.slice(0, 16).replace('T', ' ') : ''}` : (u.error ? 'unknown' : 'not checked yet');
+    $('upd-checked').textContent = u.checked_at ? new Date(u.checked_at).toLocaleTimeString() : '—';
+    const st = u.state === 'downloading' && u.progress.total ? `downloading ${Math.round(u.progress.done / u.progress.total * 100)}%` : u.state;
+    $('upd-state').textContent = u.error ? `${st} · ${u.error}` : (u.available ? `${st} · update available` : `${st} · up to date`);
+    $('upd-install').disabled = !(u.available && u.can_install) || updating;
+  }
+  async function installUpdate() {
+    if (!confirm('Download the new version and restart the app now? A running bot is stopped first and resumes its state after the restart.')) return;
+    updating = true; $('update-text').textContent = 'Downloading the update… the app restarts by itself in a moment.'; $('update-install').classList.add('hidden'); $('update-banner').classList.remove('hidden');
+    try { await api('/api/update', { action: 'install' }); $('update-text').textContent = 'Update installed. Restarting… if no new window appears within a minute, start BTCBot.exe again.'; }
+    catch (e) { updating = false; showAlert(`Update failed: ${e.message}`, 'error', 15000); }
+  }
+  $('update-install').addEventListener('click', installUpdate);
+  $('upd-install').addEventListener('click', installUpdate);
+  $('upd-check').addEventListener('click', async () => { try { renderUpdate({ ...(await api('/api/update', { action: 'check' })), build_info: (status.update || {}).build_info }); } catch (e) { showAlert(e.message); } });
+  $('gh-save').addEventListener('click', async (e) => { e.preventDefault(); try { await api('/api/secrets', { GITHUB_TOKEN: $('gh-token').value }); $('gh-token').value = ''; showAlert('GitHub token saved.', 'info'); } catch (err) { showAlert(err.message); } });
 
   // ----- price chart -----
   const C = { up: '#0ca30c', down: '#d03b3b', emaFast: '#3987e5', emaSlow: '#d95926', grid: '#273241', text: '#8b98a8', last: '#e6edf3', stop: '#d03b3b', tp: '#0ca30c', entry: '#3987e5' };

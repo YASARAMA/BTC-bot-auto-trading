@@ -12,6 +12,8 @@ venv/
 build/
 dist/
 data/*.log
+bot/ui/build_info.json
+update/
 data/*.log.*
 build/
 dist/

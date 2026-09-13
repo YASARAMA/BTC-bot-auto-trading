@@ -62,3 +62,9 @@ notify:
 logging:
   level: INFO
   format: json          # json (one object per line) or text
+
+update:
+  enabled: true                 # check GitHub Releases for newer builds (desktop app)
+  auto_install: true            # install automatically while the bot is stopped; otherwise just notify
+  check_interval_minutes: 15
+  repo: YASARAMA/BTC-bot-auto-trading

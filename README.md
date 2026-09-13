@@ -60,6 +60,24 @@ then `pyinstaller --clean --noconfirm btcbot.spec`).
 To run the same UI from source on any OS: `python -m bot.ui` (add `--browser` to skip the
 native window).
 
+### Self-updates
+
+Every push to the branch builds the executables and publishes a GitHub Release tagged
+`vX.Y.Z-build.N` (version from `bot/ui/app.py`, build number from the workflow run) with
+`BTCBot.exe`, `BTCBot-console.exe`, `BTCBot-windows.zip` and `SHA256SUMS.txt`. The desktop
+app checks the latest release at start and every `update.check_interval_minutes`:
+
+- a newer build shows a banner in the app (and a Telegram/Discord message if configured);
+- with `update.auto_install: true` it installs itself while the bot is stopped: it downloads
+  the executable, verifies its SHA-256 against the release, renames the running exe to
+  `BTCBot.old.exe`, puts the new one in place and restarts. Settings, keys, history and the
+  kill switch live next to the exe and are untouched;
+- while the bot is running it only notifies; "Update & restart" stops the bot cleanly,
+  updates, and the restarted app reconciles its position from the SQLite state.
+
+Set `update.enabled: false` to turn this off, or start with `--no-update`. A private
+repository needs a read-only `GITHUB_TOKEN` in `.env` (Settings → Updates).
+
 ## Quick start (paper trading)
 
 ```bash

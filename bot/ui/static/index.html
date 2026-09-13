@@ -33,6 +33,7 @@
 
 <div class="alert hidden" id="alert"></div>
 <div class="alert warn hidden" id="temp-warning"></div>
+<div class="alert info hidden" id="update-banner"><span id="update-text"></span> <button id="update-install" class="primary small-btn">Update &amp; restart</button> <a id="update-notes" href="#" target="_blank" rel="noopener">release notes</a></div>
 
 <nav class="tabs">
   <button data-tab="dashboard" class="active">Dashboard</button>
@@ -184,6 +185,24 @@
             <label>API passphrase (OKX, KuCoin, Coinbase) <input type="password" id="sec-password" autocomplete="off"></label>
             <label class="check danger-text"><input type="checkbox" id="sec-live"> LIVE_TRADING: allow real orders (also needs "exchange.live" on in Bot settings)</label>
             <div class="row"><button class="primary" id="sec-save">Save keys</button><button id="sec-clear" class="ghost">Remove keys</button></div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">Updates</div>
+          <table class="kv"><tbody>
+            <tr><td>Installed</td><td id="upd-current">—</td></tr>
+            <tr><td>Latest on GitHub</td><td id="upd-latest">—</td></tr>
+            <tr><td>Last check</td><td id="upd-checked">—</td></tr>
+            <tr><td>Status</td><td id="upd-state">—</td></tr>
+          </tbody></table>
+          <div class="row" style="margin-top:10px">
+            <button id="upd-check" class="ghost">Check now</button>
+            <button id="upd-install" class="primary" disabled>Install update</button>
+          </div>
+          <p class="muted small">Every new build published on GitHub is detected within the check interval (see "update" in Bot settings). With auto-install on, the app updates itself while the bot is stopped; while it is running you get a notification and a button instead. Keys, settings and history are kept.</p>
+          <form id="gh-form" class="form">
+            <label>GitHub token (only for a private repository) <input type="password" id="gh-token" autocomplete="off"></label>
+            <div class="row"><button class="ghost" id="gh-save">Save token</button></div>
           </form>
         </div>
         <div class="card">

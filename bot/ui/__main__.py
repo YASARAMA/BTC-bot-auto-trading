@@ -31,6 +31,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-open", action="store_true", help="start the server only; print the URL")
     p.add_argument("--smoke", action="store_true", help="start, call the API once, exit (used by the build check)")
     p.add_argument("--replay", metavar="CSV", help="start a paper replay of this CSV immediately")
+    p.add_argument("--no-update", action="store_true", help="do not check GitHub for new builds")
     return p.parse_args(argv)
 
 
@@ -70,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
                   extra_handlers=[controller.events])
     server = UIServer(controller, port=args.port)
     server.start()
-    log_event(log, "ui_started", version=VERSION, url=server.url, root=str(root), frozen=is_frozen())
+    log_event(log, "ui_started", version=VERSION, build=controller.build_info, url=server.url, root=str(root), frozen=is_frozen())
 
     if args.smoke:
         req = urllib.request.Request(server.url + "api/status", headers={"X-Token": server.token})
@@ -91,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         server.shutdown()
         return 0
 
+    if not args.no_update:
+        controller.start_updater()
     if args.replay:
         controller.start(replay=args.replay)
 
