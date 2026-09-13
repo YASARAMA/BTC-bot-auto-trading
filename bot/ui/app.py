@@ -349,7 +349,10 @@ class BotController:
 
     def why_no_trades(self) -> dict[str, Any]:
         """Plain-language answer to 'the bot is running but not trading'."""
-        rt, out = self.runtime, {"decisions": dict(self.decisions), "recent": self.last_signals[-8:][::-1]}
+        # One snapshot: the bot keeps cycling, so the counts and their total must be read
+        # together or they disagree by a candle.
+        decisions = dict(self.decisions)
+        rt, out = self.runtime, {"decisions": decisions, "recent": self.last_signals[-8:][::-1]}
         try:
             cfg = self.load_cfg()
         except Exception:  # noqa: BLE001
@@ -390,7 +393,7 @@ class BotController:
             "indicators": ind, "ema_gap_pct": round(gap, 3) if gap is not None else None,
             "blockers": blockers, "waiting": waiting,
             "min_gap_minutes": round(cfg.risk.min_seconds_between_trades / 60),
-            "candles_evaluated": sum(self.decisions.values()),
+            "candles_evaluated": sum(decisions.values()),
             "hints": [
                 f"On {tf} candles an EMA crossover typically happens every few days. Fewer, longer candles mean fewer trades.",
                 "A shorter timeframe (5m or 15m in Settings) trades far more often, with more noise and more fees.",
