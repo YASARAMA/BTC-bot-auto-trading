@@ -114,6 +114,7 @@ class LoggingConfig(StrictModel):
 
 
 class BotConfig(StrictModel):
+    mode: Literal["safe", "balanced", "aggressive"] = "balanced"
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -164,7 +165,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> BotConfig:
 
 
 DOTENV_KEYS = ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "EXCHANGE_API_PASSWORD", "LIVE_TRADING",
-               "BOT_CONFIG", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "GITHUB_TOKEN")
+               "BOT_CONFIG", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL", "GITHUB_TOKEN",
+               "ANTHROPIC_API_KEY")
 
 
 def read_dotenv(path: str | os.PathLike[str]) -> dict[str, str]:

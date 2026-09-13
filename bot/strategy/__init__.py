@@ -4,10 +4,12 @@ from __future__ import annotations
 from typing import Any
 
 from bot.strategy.base import Strategy
+from bot.strategy.ai import AiStrategy
 from bot.strategy.ema_rsi import EmaRsiStrategy
 
 STRATEGIES: dict[str, type[Strategy]] = {
     EmaRsiStrategy.name: EmaRsiStrategy,
+    AiStrategy.name: AiStrategy,
 }
 
 

@@ -62,6 +62,22 @@ def setup_logging(level: str = "INFO", fmt: str = "json", *, stdout: bool = True
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+IMPORTANT_EVENTS = frozenset({
+    "startup", "ui_start", "shutdown", "reconcile", "order_filled", "order_partial_fill",
+    "order_not_filled", "position_opened", "trade_closed", "risk_event", "cycle_error",
+    "protective_exit_blocked", "manual_order", "levels_changed", "kill_switch_on",
+    "kill_switch_off", "candle_gap", "candles_missed", "live_mode", "replay_finished",
+    "update_available", "update_installed", "startup_refused", "ai_decision", "mode_changed",
+})
+
+
+def channel_for(item: dict[str, Any]) -> str:
+    """Which channel a log record belongs to: 'log' (what happened) or 'debug' (everything)."""
+    if item.get("level") in ("WARNING", "ERROR", "CRITICAL"):
+        return "log"
+    return "log" if item.get("event") in IMPORTANT_EVENTS else "debug"
+
+
 class EventBufferHandler(logging.Handler):
     """Keeps the last N log records as dicts so a UI can poll them."""
 
@@ -88,6 +104,7 @@ class EventBufferHandler(logging.Handler):
                 item.update(extra)
             if record.exc_info:
                 item["exc"] = self.formatException(record.exc_info) if hasattr(self, "formatException") else str(record.exc_info[1])
+            item["channel"] = channel_for(item)
             with self._lock:
                 item["id"] = self._next_id
                 self._next_id += 1
@@ -100,9 +117,12 @@ class EventBufferHandler(logging.Handler):
         except Exception:  # noqa: BLE001
             self.handleError(record)
 
-    def since(self, last_id: int, limit: int = 500) -> list[dict[str, Any]]:
+    def since(self, last_id: int, limit: int = 500, channel: str | None = None) -> list[dict[str, Any]]:
+        """Records newer than last_id. channel 'log' or 'debug' filters; None returns both."""
         with self._lock:
             items = [x for x in self.buffer if x["id"] > last_id]
+        if channel in ("log", "debug"):
+            items = [x for x in items if x.get("channel") == channel]
         return items[-limit:]
 
 

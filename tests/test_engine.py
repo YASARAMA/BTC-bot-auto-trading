@@ -1,10 +1,12 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from bot.engine import TradingEngine
 from bot.execution.executor import OrderExecutor
 from bot.execution.paper import PaperExchange
-from bot.models import Action, Signal
+from bot.models import Action, Side, Signal
 from bot.notify.notifier import Notifier
 from bot.risk.manager import RiskManager
 from bot.state.store import StateStore
@@ -134,3 +136,79 @@ def test_reconcile_clears_phantom_position(cfg):
     assert engine.position is None
     assert any("clearing position" in w for w in summary["warnings"])
     assert store.get_state("position") is None
+
+
+def test_manual_buy_and_sell(cfg, tmp_path):
+    df = make_ohlcv([100.0] * 6, spread=0.0)
+    ts = df["ts"].tolist()
+    clock = {"now": ts[0] + TF_MS}
+    engine, exchange = build(cfg, StateStore(":memory:"), ScriptedStrategy(), lambda: clock["now"])
+    exchange.set_price(100.0)
+
+    out = engine.manual_order(Side.BUY, quote_amount=2000.0, stop_loss=95.0, take_profit=110.0)
+    assert engine.position is not None
+    assert engine.position.qty == pytest.approx(20.0, rel=1e-3)
+    assert engine.position.stop_loss == 95.0 and engine.position.take_profit == 110.0
+    assert out["order"]["side"] == "buy" and out["order"]["kind"] == "entry"
+    assert engine.risk.state.trades_today == 1  # counted like any other entry
+
+    # A second buy is refused; the bot is already long.
+    with pytest.raises(ValueError, match="already in a position"):
+        engine.manual_order(Side.BUY, quote_amount=100.0)
+
+    # Levels can be moved afterwards.
+    engine.set_protective_levels(96.0, 120.0)
+    assert engine.position.stop_loss == 96.0 and engine.position.take_profit == 120.0
+    with pytest.raises(ValueError, match="below the current price"):
+        engine.set_protective_levels(101.0, 120.0)
+
+    exchange.set_price(105.0)
+    engine.manual_order(Side.SELL)
+    assert engine.position is None
+    trades = engine.store.trades()
+    assert len(trades) == 1 and trades[0].exit_reason == "exit" and trades[0].pnl > 0
+    assert trades[0].exit_price == pytest.approx(105.0)
+
+
+def test_manual_order_validation_and_kill_switch(cfg, tmp_path):
+    df = make_ohlcv([100.0] * 4, spread=0.0)
+    clock = {"now": int(df["ts"].iloc[0]) + TF_MS}
+    engine, exchange = build(cfg, StateStore(":memory:"), ScriptedStrategy(), lambda: clock["now"], cash=500.0)
+    exchange.set_price(100.0)
+
+    with pytest.raises(ValueError, match="no open position"):
+        engine.manual_order(Side.SELL)
+    with pytest.raises(ValueError, match="give either qty or quote_amount"):
+        engine.manual_order(Side.BUY)
+    with pytest.raises(ValueError, match="stop loss"):
+        engine.manual_order(Side.BUY, quote_amount=100.0, stop_loss=150.0)
+    with pytest.raises(ValueError, match="take profit"):
+        engine.manual_order(Side.BUY, quote_amount=100.0, take_profit=50.0)
+    with pytest.raises(ValueError, match="too small"):
+        engine.manual_order(Side.BUY, quote_amount=2.0)
+
+    # Spending more than the balance is capped at what is actually affordable.
+    engine.manual_order(Side.BUY, quote_amount=10_000.0)
+    assert engine.position.qty * 100.0 <= 500.0
+    engine.manual_order(Side.SELL)
+
+    # Kill switch blocks manual orders too.
+    Path(cfg.risk.kill_switch_file).write_text("stop")
+    with pytest.raises(PermissionError, match="kill switch"):
+        engine.manual_order(Side.BUY, quote_amount=100.0)
+    Path(cfg.risk.kill_switch_file).unlink()
+
+
+def test_manual_position_is_managed_by_the_bot(cfg):
+    """A hand-opened position is still protected by its stop loss."""
+    df = make_ohlcv([100.0, 100.0, 100.0, 94.0], spread=0.0)
+    ts = df["ts"].tolist()
+    clock = {"now": ts[0] + TF_MS}
+    engine, exchange = build(cfg, StateStore(":memory:"), ScriptedStrategy(), lambda: clock["now"])
+    exchange.set_price(100.0)
+    engine.manual_order(Side.BUY, quote_amount=1000.0, stop_loss=96.0)
+    clock["now"] = ts[3] + TF_MS
+    exchange.set_price(94.0)
+    engine.process_candle(df, fill_price=94.0, exit_at_level=True)
+    assert engine.position is None
+    assert engine.store.trades()[0].exit_reason == "stop_loss"

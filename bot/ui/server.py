@@ -80,13 +80,33 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
                 raise ApiError(500, f"update failed: {type(exc).__name__}: {exc}") from exc
         raise ApiError(400, f"unknown update action {action!r}")
 
+    def manual_order(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.manual_order(body)
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from exc
+        except (ValueError, RuntimeError) as exc:
+            raise ApiError(400, str(exc)) from exc
+
+    def set_levels(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.set_levels(body)
+        except (ValueError, RuntimeError) as exc:
+            raise ApiError(400, str(exc)) from exc
+
+    def set_mode(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.set_mode(str(body.get("mode", "")))
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+
     def quit_app(q: dict[str, Any], body: dict[str, Any]) -> Any:
         threading.Thread(target=c.quit, daemon=True).start()
         return {"ok": True}
 
     return {
         ("GET", "/api/status"): lambda q, b: c.status(),
-        ("GET", "/api/events"): lambda q, b: {"events": c.events.since(int(q.get("since", 0)), int(q.get("limit", 500)))},
+        ("GET", "/api/events"): lambda q, b: {"events": c.events.since(int(q.get("since", 0)), int(q.get("limit", 500)), q.get("channel"))},
         ("GET", "/api/trades"): lambda q, b: {"trades": c.trades(int(q.get("limit", 500)))},
         ("GET", "/api/equity"): lambda q, b: {"equity": c.equity(int(q.get("limit", 2000)))},
         ("GET", "/api/config"): lambda q, b: {"config": c.config_dict(), "yaml": c.config_yaml(), **c.config_meta()},
@@ -101,6 +121,9 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         ("GET", "/api/backtest"): lambda q, b: c.backtest_status(),
         ("POST", "/api/backtest"): start_backtest,
         ("POST", "/api/quit"): quit_app,
+        ("POST", "/api/order"): manual_order,
+        ("POST", "/api/levels"): set_levels,
+        ("POST", "/api/mode"): set_mode,
         ("GET", "/api/update"): lambda q, b: c.updater.status(),
         ("POST", "/api/update"): update_action,
     }

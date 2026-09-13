@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from bot.common import floor_ts, iso, timeframe_to_ms
+from bot.common import floor_ts, iso, round_step, timeframe_to_ms
 from bot.config import BotConfig
 from bot.execution.base import ExchangeClient
 from bot.execution.executor import OrderExecutor
@@ -201,7 +201,7 @@ class TradingEngine:
         if exit_summary:
             summary["protective"] = exit_summary
 
-        signal = self.strategy.on_candle(df)
+        signal = self.evaluate_strategy(df, ts, price)
         account = self.account(price, now)
         decision = self.risk.evaluate(signal, account, ts)
         summary["signal"] = signal.to_dict()
@@ -229,6 +229,24 @@ class TradingEngine:
             risk=self.risk.status(now, acct.equity),
         )
         return summary
+
+    def evaluate_strategy(self, df: pd.DataFrame, candle_ts: int, price: float):
+        """Call the strategy, handing it context when its signature accepts one."""
+        import inspect
+
+        try:
+            accepts_context = "context" in inspect.signature(self.strategy.on_candle).parameters
+        except (TypeError, ValueError):  # pragma: no cover - exotic callables
+            accepts_context = False
+        if not accepts_context:
+            return self.strategy.on_candle(df)
+        context = {
+            "symbol": self.symbol, "timeframe": self.cfg.exchange.timeframe,
+            "candle_time": iso(candle_ts),
+            "position": self.position.to_dict() if self.position else None,
+            "risk": self.risk.status(self.now(), self.account(price).equity),
+        }
+        return self.strategy.on_candle(df, context=context)
 
     def process_tick(self, price: float, now_ms: int | None = None) -> dict[str, Any] | None:
         """Intra-candle stop / take-profit check at the current market price."""
@@ -269,6 +287,89 @@ class TradingEngine:
             return {"intent": intent.to_dict(), "order": None}
         self._apply_fill(order, intent, now, intent.ref_price)
         return {"intent": intent.to_dict(), "order": order.to_dict()}
+
+    # ----- manual trading -------------------------------------------------------------------
+    def manual_order(
+        self,
+        side: Side,
+        *,
+        qty: float | None = None,
+        quote_amount: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        reason: str = "manual order from the UI",
+    ) -> dict[str, Any]:
+        """Place an order the operator asked for.
+
+        The kill switch still blocks it and the exchange minimums still apply, but the
+        signal gates (confidence, cooldown, daily halt) do not: this is a human decision.
+        Sizing is still capped by the cash or coins actually available.
+        """
+        now = self.now()
+        price = self.exchange.fetch_ticker_price(self.symbol)
+        if self.risk.kill_switch_active():
+            raise PermissionError(f"kill switch is on ({self.cfg.risk.kill_switch_file}); no orders are placed")
+        info = self.exchange.market_info(self.symbol)
+        bal = self.exchange.fetch_balance()
+
+        if side == Side.BUY:
+            if self.position is not None and self.position.qty > 0:
+                raise ValueError("already in a position; close it before buying again")
+            cash = float(bal.get(self.quote, {}).get("free", 0.0))
+            if quote_amount is not None:
+                amount = min(float(quote_amount), cash)
+            elif qty is not None:
+                amount = float(qty) * price
+            else:
+                raise ValueError("give either qty or quote_amount")
+            affordable = cash / (1.0 + self.cfg.exchange.fee_rate)
+            amount = min(amount, affordable)
+            order_qty = round_step(amount / price, info.amount_step)
+            if stop_loss is not None and not (0 < stop_loss < price):
+                raise ValueError(f"stop loss {stop_loss} must be above 0 and below the price {price:.2f}")
+            if take_profit is not None and take_profit <= price:
+                raise ValueError(f"take profit {take_profit} must be above the price {price:.2f}")
+        else:
+            if self.position is None or self.position.qty <= 0:
+                raise ValueError("no open position to sell")
+            order_qty = round_step(min(float(qty), self.position.qty) if qty else self.position.qty, info.amount_step)
+            stop_loss = take_profit = None
+
+        if order_qty <= 0 or order_qty < info.min_amount or order_qty * price < max(info.min_notional, self.cfg.risk.min_order_notional):
+            raise ValueError(
+                f"order too small: {order_qty:.8f} {self.base} (~{order_qty * price:.2f} {self.quote}); "
+                f"minimum is {max(info.min_notional, self.cfg.risk.min_order_notional):g} {self.quote}")
+
+        intent = OrderIntent(
+            side=side, qty=order_qty, ref_price=price,
+            kind="entry" if side == Side.BUY else "exit",
+            candle_ts=int(now), reason=reason, stop_loss=stop_loss, take_profit=take_profit, confidence=1.0,
+        )
+        log_event(log, "manual_order", side=side.value, qty=order_qty, price=price,
+                  stop_loss=stop_loss, take_profit=take_profit)
+        order = self.executor.execute(intent)
+        if order is None:
+            self.persist()
+            raise RuntimeError("the exchange did not fill the order; see the log for the reason")
+        self._apply_fill(order, intent, now, price)
+        self.persist()
+        return {"order": order.to_dict(), "position": self.position.to_dict() if self.position else None,
+                "price": price}
+
+    def set_protective_levels(self, stop_loss: float | None, take_profit: float | None) -> dict[str, Any]:
+        """Move the stop loss / take profit of the open position."""
+        if self.position is None:
+            raise ValueError("no open position")
+        price = self.exchange.fetch_ticker_price(self.symbol)
+        if stop_loss is not None and not (0 < stop_loss < price):
+            raise ValueError(f"stop loss must be below the current price {price:.2f}")
+        if take_profit is not None and take_profit <= price:
+            raise ValueError(f"take profit must be above the current price {price:.2f}")
+        self.position.stop_loss = stop_loss
+        self.position.take_profit = take_profit
+        self.persist()
+        log_event(log, "levels_changed", stop_loss=stop_loss, take_profit=take_profit, price=price)
+        return self.position.to_dict()
 
     # ----- fills -------------------------------------------------------------------------
     def _apply_fill(self, order: Order, intent: OrderIntent, now: int, mark_price: float) -> None:

@@ -26,7 +26,10 @@ class Strategy(ABC):
 
     @abstractmethod
     def on_candle(self, df: pd.DataFrame) -> Signal:
-        """df: closed candles with columns ts, open, high, low, close, volume; last row is newest."""
+        """df: closed candles with columns ts, open, high, low, close, volume; last row is newest.
+
+        Subclasses may accept an optional `context` keyword (symbol, timeframe, position,
+        risk state); the engine passes it when the signature allows it."""
 
     def describe(self) -> dict[str, Any]:
         return {"name": self.name, "params": self.raw_params, "warmup": self.warmup}

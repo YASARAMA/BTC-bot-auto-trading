@@ -250,3 +250,85 @@ def test_update_endpoints(ui):
     assert call(server, "/api/update", {"action": "bogus"})[0] == 400
     cfg = call(server, "/api/config")[1]["config"]
     assert cfg["update"]["auto_install"] is True and cfg["update"]["repo"].startswith("YASARAMA/")
+
+
+def test_mode_switching_rewrites_risk_and_strategy(ui):
+    root, c, server = ui
+    st = call(server, "/api/status")[1]
+    assert st["trading_mode"] == "balanced" and len(st["trading_modes"]) == 3
+    code, out = call(server, "/api/mode", {"mode": "aggressive"})
+    assert code == 200 and out["config"]["risk"]["risk_per_trade_pct"] == 2.0
+    assert out["config"]["risk"]["max_position_pct"] == 50.0 and out["config"]["mode"] == "aggressive"
+    assert out["config"]["strategy"]["params"]["atr_stop_mult"] == 1.5
+    assert c.load_cfg().mode == "aggressive"  # persisted to config.yaml
+    st = call(server, "/api/status")[1]
+    assert st["trading_mode"] == "aggressive" and st["config"]["mode_matches"] is True
+    assert any(a.get("event") == "mode_changed" for a in c.recent_alerts)
+    assert call(server, "/api/mode", {"mode": "nonsense"})[0] == 400
+    # Hand-editing one number makes the config stop matching the mode.
+    cfg = call(server, "/api/config")[1]["config"]
+    cfg["risk"]["risk_per_trade_pct"] = 1.23
+    call(server, "/api/config", {"config": cfg})
+    assert call(server, "/api/status")[1]["config"]["mode_matches"] is False
+
+
+def test_manual_order_api(ui):
+    root, c, server = ui
+    # Refused while the bot is stopped: manual orders need its exchange connection.
+    code, err = call(server, "/api/order", {"side": "buy", "quote_amount": 100})
+    assert code == 400 and "start the bot" in err["error"].lower()
+
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.4})
+    wait_for(lambda: call(server, "/api/status")[1]["state"] == "running" and call(server, "/api/status")[1]["price"])
+    assert call(server, "/api/order", {"side": "sideways"})[0] == 400
+    assert call(server, "/api/order", {"side": "sell"})[0] == 400  # nothing to sell yet
+
+    code, out = call(server, "/api/order", {"side": "buy", "quote_amount": 500})
+    assert code == 200, out
+    assert out["order"]["side"] == "buy" and out["order"]["filled"] > 0
+    assert out["position"]["qty"] == pytest.approx(out["order"]["filled"])
+    assert any(a.get("event") == "manual_order" for a in c.recent_alerts)
+
+    code, pos = call(server, "/api/levels", {"stop_loss": out["price"] * 0.9, "take_profit": out["price"] * 1.2})
+    assert code == 200 and pos["stop_loss"] == pytest.approx(out["price"] * 0.9)
+    assert call(server, "/api/levels", {"stop_loss": out["price"] * 2})[0] == 400
+
+    code, sold = call(server, "/api/order", {"side": "sell"})
+    assert code == 200 and sold["position"] is None
+    assert call(server, "/api/trades")[1]["trades"], "the manual round trip is in the history"
+
+    # The kill switch blocks manual orders as well.
+    call(server, "/api/kill", {"active": True})
+    code, err = call(server, "/api/order", {"side": "buy", "quote_amount": 100})
+    assert code == 403 and "kill switch" in err["error"]
+    call(server, "/api/kill", {"active": False})
+    call(server, "/api/stop", {"wait": 10})
+
+
+def test_log_and_debug_channels(ui):
+    root, c, server = ui
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.02})
+    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 40)
+    call(server, "/api/stop", {"wait": 10})
+    everything = call(server, "/api/events?since=0&limit=2000")[1]["events"]
+    log_only = call(server, "/api/events?since=0&limit=2000&channel=log")[1]["events"]
+    debug_only = call(server, "/api/events?since=0&limit=2000&channel=debug")[1]["events"]
+    assert everything and log_only and debug_only
+    assert len(log_only) + len(debug_only) == len(everything)
+    assert all(e["channel"] == "log" for e in log_only)
+    assert all(e.get("event") == "cycle" or e["level"] == "DEBUG" for e in debug_only)
+    assert any(e.get("event") == "reconcile" for e in log_only)
+    assert not any(e.get("event") == "cycle" for e in log_only), "routine cycles belong in the debug channel"
+
+
+def test_ai_status_is_reported(ui, monkeypatch):
+    root, c, server = ui
+    st = call(server, "/api/status")[1]["ai"]
+    assert st["enabled"] is False and st["key_set"] is False
+    call(server, "/api/secrets", {"ANTHROPIC_API_KEY": "sk-ant-test"})
+    cfg = call(server, "/api/config")[1]["config"]
+    cfg["strategy"] = {"name": "ai", "params": {"model": "claude-sonnet-5", "fallback_to_technical": True}}
+    assert call(server, "/api/config", {"config": cfg})[0] == 200
+    st = call(server, "/api/status")[1]["ai"]
+    assert st["enabled"] is True and st["key_set"] is True and st["model"] == "claude-sonnet-5"
+    assert "sk-ant-test" not in json.dumps(call(server, "/api/status")[1])

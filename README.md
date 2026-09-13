@@ -43,12 +43,15 @@ when a version tag such as `v0.2.0` is pushed. Unzip and double-click `BTCBot.ex
 - **Start (paper)** trades with real market data and simulated fills. **Demo** replays the
   bundled historical candles at several candles per second so you can watch it work.
   **Kill switch** blocks every order until you turn it off. **Quit** stops the bot cleanly.
-- Tabs: Dashboard (equity curve, last signal, risk state), Chart (candlesticks from the
-  exchange with EMA lines, volume, the open position's entry/stop/take-profit levels, entry
-  and exit markers, crosshair tooltip, scroll to zoom, optional TradingView embed; on
-  Binance the forming candle and price stream live over the public WebSocket), Trades,
-  Backtest (run on a CSV or download a date range), Settings (every `config.yaml` key, API
-  keys, notifications), Log.
+- Tabs: **Dashboard** (equity curve, last decision, risk state), **Chart** (candlesticks
+  from the exchange with EMA lines, volume, the open position's entry/stop/take-profit
+  levels, entry and exit markers, crosshair tooltip, scroll to zoom, optional TradingView
+  embed; on Binance the forming candle and price stream live over the public WebSocket),
+  **Trade** (place orders by hand), **AI** (Claude's status and reasoning), **Modes**
+  (safe / balanced / aggressive), **History**, **Backtest**, **Settings**, **Log** and
+  **Debug**.
+- Four themes (Obsidian, Midnight, Terminal, Daylight), animations that can be turned off,
+  and toast notifications for fills, trades and risk events.
 - `BTCBot-console.exe` is the same app with a console window, useful when something fails
   before the UI appears. Logs also go to `data/bot.log`.
 
@@ -142,6 +145,59 @@ Before trading, `TradingEngine.reconcile()`:
 - compares the recorded position with the base-currency balance and shrinks or clears the
   position if the coins are not there (a warning is logged);
 - ignores, but reports, coins in the account that the bot did not buy.
+
+## Trading modes
+
+One click in the **Modes** tab rewrites the risk limits and strategy parameters:
+
+| | Safe | Balanced | Aggressive |
+| --- | ---: | ---: | ---: |
+| Risk per trade | 0.5% | 1% | 2% |
+| Max position | 10% of equity | 25% | 50% |
+| Daily loss stop | 2% | 3% | 6% |
+| Losses before cooldown | 2 | 3 | 5 |
+| Cooldown | 12 h | 4 h | 1 h |
+| Minimum gap between entries | 4 h | 1 h | 15 min |
+| Minimum signal confidence | 0.70 | 0.50 | 0.35 |
+
+Aggressive is not "better": it takes more trades, sizes them larger and lets the account
+fall further before stopping. A mode is a starting point; edit any value afterwards in
+Settings and the badge shows the config as custom.
+
+## The AI trader
+
+Set `strategy.name: ai` (or use the toggle in the **AI** tab) and put an Anthropic API key
+in `.env` as `ANTHROPIC_API_KEY`. On every closed candle the bot sends Claude a structured
+snapshot: the last 60 candles, EMA / RSI / ATR, recent range and volume, the open position
+and the risk state. Claude returns one JSON decision: action, confidence, stop loss, take
+profit and a one-sentence reason citing the indicator values.
+
+The model **never places an order**. Its decision becomes a `Signal` that goes through the
+same `RiskManager` as any other strategy, so position size, the daily-loss halt, cooldowns,
+the minimum gap between trades and the kill switch all still apply. The bot also refuses a
+BUY without a valid stop below the price, and tightens a stop wider than `max_stop_atr`
+multiples of ATR.
+
+Cost control: `only_on_technical_setup: true` calls the model only when the technical
+strategy sees a setup. `fallback_to_technical: true` (the default) means an API failure or
+a missing key falls back to `ema_rsi` instead of stopping the bot. Model choice is yours;
+`claude-opus-5` is the default, `claude-sonnet-5` and `claude-haiku-4-5` are cheaper.
+
+The AI strategy is not backtested: replaying a year of candles would mean one API call per
+candle. Test it in paper mode.
+
+## Manual trading
+
+The **Trade** tab places market orders through the same executor the bot uses, so fills,
+fees and history are recorded identically (simulated in paper mode, real in live mode).
+You can size the order as a share of your cash, set a stop and target from presets, see
+what the order risks before confirming, move the levels of an open position, and sell
+everything in one click.
+
+Manual orders skip the signal filters (confidence, cooldown, daily halt) because they are
+your decision, but they still obey the kill switch, the exchange minimums and your actual
+balance. The automatic strategy keeps running: it can close a position you opened by hand.
+Stop the bot or turn on the kill switch if you want full control.
 
 ## Configuration
 

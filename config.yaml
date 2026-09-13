@@ -1,6 +1,10 @@
 # BTC spot trading bot configuration. No secrets live here: API keys, webhook URLs and
 # the LIVE_TRADING switch come from the environment (see .env.example).
 
+# Trading mode: safe | balanced | aggressive. Picking one in the UI rewrites the risk
+# limits and strategy parameters below. Edit them afterwards to hand-tune.
+mode: balanced
+
 exchange:
   id: binance            # any ccxt spot exchange id
   symbol: BTC/USDT

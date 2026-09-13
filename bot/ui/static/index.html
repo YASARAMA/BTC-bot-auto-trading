@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="obsidian">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div class="topwrap">
 <header class="topbar">
   <div class="brand">
     <span class="logo">₿</span>
@@ -21,9 +22,12 @@
     <span class="dot" id="state-dot"></span>
     <span id="state-text">connecting</span>
     <span class="badge" id="mode-badge">—</span>
+    <span class="badge hidden" id="trading-mode-badge">—</span>
+    <span class="badge ai hidden" id="ai-badge">AI</span>
   </div>
   <div class="actions">
-    <button id="btn-start" class="primary" title="Start the bot with real market data and simulated fills (paper), or live if both live switches are on">Start</button>
+    <div class="theme-picker" id="theme-picker"></div>
+    <button id="btn-start" class="primary" title="Start the bot: real market data, simulated fills in paper mode">Start</button>
     <button id="btn-demo" title="Replay historical candles quickly so you can watch the bot work">Demo</button>
     <button id="btn-stop" class="danger" disabled>Stop</button>
     <button id="btn-kill" class="kill" title="Kill switch: block every order until you turn it off">Kill switch: off</button>
@@ -31,24 +35,29 @@
   </div>
 </header>
 
-<div class="alert hidden" id="alert"></div>
-<div class="alert warn hidden" id="temp-warning"></div>
-<div class="alert info hidden" id="update-banner"><span id="update-text"></span> <button id="update-install" class="primary small-btn">Update &amp; restart</button> <a id="update-notes" href="#" target="_blank" rel="noopener">release notes</a></div>
-
 <nav class="tabs">
   <button data-tab="dashboard" class="active">Dashboard</button>
   <button data-tab="chart">Chart</button>
-  <button data-tab="trades">Trades</button>
+  <button data-tab="trade">Trade</button>
+  <button data-tab="ai">AI</button>
+  <button data-tab="modes">Modes</button>
+  <button data-tab="trades">History</button>
   <button data-tab="backtest">Backtest</button>
   <button data-tab="settings">Settings</button>
   <button data-tab="log">Log</button>
+  <button data-tab="debug">Debug</button>
 </nav>
+</div>
+
+<div class="alert hidden" id="alert"></div>
+<div class="alert warn hidden" id="temp-warning"></div>
+<div class="alert info hidden" id="update-banner"><span id="update-text"></span> <button id="update-install" class="primary small-btn">Update &amp; restart</button> <a id="update-notes" href="#" target="_blank" rel="noopener">release notes</a></div>
 
 <main>
   <!-- Dashboard -->
   <section id="tab-dashboard" class="tab active">
     <div class="tiles">
-      <div class="tile"><div class="label">Price</div><div class="value" id="t-price">—</div></div>
+      <div class="tile"><div class="label">Price</div><div class="value" id="t-price">—</div><div class="sub" id="t-price-sub"></div></div>
       <div class="tile"><div class="label">Equity</div><div class="value" id="t-equity">—</div><div class="sub" id="t-equity-sub"></div></div>
       <div class="tile"><div class="label">Cash</div><div class="value" id="t-cash">—</div></div>
       <div class="tile"><div class="label">Position</div><div class="value" id="t-position">flat</div><div class="sub" id="t-position-sub"></div></div>
@@ -59,19 +68,21 @@
     <div class="grid2">
       <div class="card">
         <div class="card-title">Equity curve</div>
-        <canvas id="equity-chart" height="260"></canvas>
+        <canvas id="equity-chart" height="270"></canvas>
         <div class="muted small" id="equity-note">No equity data yet. Start the bot or run a demo.</div>
       </div>
       <div class="stack">
         <div class="card">
-          <div class="card-title">Last signal</div>
+          <div class="card-title">Last decision</div>
           <div class="signal"><span class="badge big" id="sig-action">—</span><span id="sig-conf" class="muted"></span></div>
-          <div class="reason" id="sig-reason">The strategy has not evaluated a candle yet.</div>
+          <div class="meter" id="conf-meter"><i style="width:0%"></i></div>
+          <div class="reason" id="sig-reason" style="margin-top:10px">The strategy has not evaluated a candle yet.</div>
           <div class="reason muted" id="sig-decision"></div>
         </div>
         <div class="card">
           <div class="card-title">Risk</div>
-          <table class="kv" id="risk-table"><tbody>
+          <table class="kv"><tbody>
+            <tr><td>Trading mode</td><td id="r-mode">—</td></tr>
             <tr><td>Halted</td><td id="r-halted">—</td></tr>
             <tr><td>Cooldown</td><td id="r-cooldown">—</td></tr>
             <tr><td>Consecutive losses</td><td id="r-losses">—</td></tr>
@@ -121,7 +132,127 @@
     </div>
   </section>
 
-  <!-- Trades -->
+  <!-- Manual trading -->
+  <section id="tab-trade" class="tab">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">Manual order <span class="muted small">you decide, the bot executes</span></div>
+        <div id="trade-blocked" class="confirm-box hidden" style="margin-bottom:12px"></div>
+        <div class="tiles compact">
+          <div class="tile"><div class="label">Price</div><div class="value" id="tr-price">—</div></div>
+          <div class="tile"><div class="label">Cash free</div><div class="value" id="tr-cash">—</div></div>
+          <div class="tile"><div class="label">Position</div><div class="value" id="tr-pos">flat</div></div>
+        </div>
+        <form id="trade-form" class="form">
+          <div class="trade-grid">
+            <label class="full">Amount to spend (quote currency)
+              <input type="number" id="tr-amount" min="0" step="any" placeholder="e.g. 250">
+            </label>
+            <div class="full preset-row" id="tr-presets"></div>
+            <label>Stop loss (optional)<input type="number" id="tr-stop" min="0" step="any" placeholder="price"></label>
+            <label>Take profit (optional)<input type="number" id="tr-tp" min="0" step="any" placeholder="price"></label>
+            <div class="full preset-row" id="tr-stop-presets"></div>
+          </div>
+          <div class="confirm-box" id="tr-preview">Enter an amount to see what the order will do.</div>
+          <div class="row">
+            <button type="button" id="tr-buy" class="success">Buy</button>
+            <button type="button" id="tr-sell" class="danger">Sell everything</button>
+            <span class="muted small">Manual orders ignore the signal filters but still obey the kill switch and exchange minimums.</span>
+          </div>
+        </form>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">Open position</div>
+          <table class="kv"><tbody>
+            <tr><td>Quantity</td><td id="pos-qty">—</td></tr>
+            <tr><td>Entry price</td><td id="pos-entry">—</td></tr>
+            <tr><td>Stop loss</td><td id="pos-stop">—</td></tr>
+            <tr><td>Take profit</td><td id="pos-tp">—</td></tr>
+            <tr><td>Unrealised P/L</td><td id="pos-upnl">—</td></tr>
+          </tbody></table>
+          <form id="levels-form" class="form" style="margin-top:12px">
+            <div class="row">
+              <label>New stop loss<input type="number" id="lv-stop" min="0" step="any"></label>
+              <label>New take profit<input type="number" id="lv-tp" min="0" step="any"></label>
+            </div>
+            <div class="row"><button class="primary" id="lv-save">Update levels</button></div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">How manual orders work</div>
+          <p class="muted small">The bot places a market order through the same executor it uses itself, so the fill, fees and history are recorded identically. In paper mode the fill is simulated; in live mode it is a real order.</p>
+          <p class="muted small">The automatic strategy keeps running. If it decides to sell (its own signal, your stop, or the take profit), it will close a position you opened by hand. Turn on the kill switch or stop the bot if you want full control.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AI -->
+  <section id="tab-ai" class="tab">
+    <div class="grid2">
+      <div class="card">
+        <div class="ai-head"><span class="ai-orb" id="ai-orb"></span>
+          <div><div class="card-title" style="margin:0">AI trader</div><div class="muted small" id="ai-sub">Claude decides, the risk manager still guards every order.</div></div>
+        </div>
+        <div class="tiles compact">
+          <div class="tile"><div class="label">Status</div><div class="value" id="ai-state" style="font-size:16px">off</div></div>
+          <div class="tile"><div class="label">Model</div><div class="value" id="ai-model" style="font-size:16px">—</div></div>
+          <div class="tile"><div class="label">Decisions</div><div class="value" id="ai-calls">0</div><div class="sub" id="ai-failures"></div></div>
+          <div class="tile"><div class="label">Last call</div><div class="value" id="ai-latency" style="font-size:16px">—</div><div class="sub" id="ai-tokens"></div></div>
+        </div>
+        <div class="card-title" style="margin-top:6px">Latest reasoning</div>
+        <div class="ai-quote" id="ai-reason">No AI decision yet.</div>
+        <div class="muted small" id="ai-detail" style="margin-top:8px"></div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">Turn the AI trader on</div>
+          <form id="ai-form" class="form">
+            <label>Anthropic API key <input type="password" id="ai-key" autocomplete="off" placeholder="sk-ant-…"><span class="muted small" id="ai-key-state"></span></label>
+            <label>Model
+              <select id="ai-model-select">
+                <option value="claude-opus-5">Claude Opus 5 — best judgement (default)</option>
+                <option value="claude-sonnet-5">Claude Sonnet 5 — cheaper, still strong</option>
+                <option value="claude-haiku-4-5">Claude Haiku 4.5 — cheapest, fastest</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="ai-enable"> Use the AI strategy instead of the technical one</label>
+            <label class="check"><input type="checkbox" id="ai-only-setup" checked> Only ask the AI when the technical strategy sees a setup (saves cost)</label>
+            <label class="check"><input type="checkbox" id="ai-fallback" checked> Fall back to the technical strategy if the API fails</label>
+            <div class="row"><button class="primary" id="ai-save">Save AI settings</button></div>
+          </form>
+          <p class="muted small">The key is stored in <code>.env</code> next to the app and is only sent to Anthropic. Each decision costs a fraction of a cent to a few cents depending on the model. Changes apply the next time you press Start.</p>
+        </div>
+        <div class="card">
+          <div class="card-title">What the AI can and cannot do</div>
+          <p class="muted small">It can: read the last candles and indicators, decide buy, sell or hold, propose a stop loss and take profit, and explain its reasoning in one sentence.</p>
+          <p class="muted small">It cannot: choose position size, bypass the daily loss limit, trade during a cooldown, or place an order while the kill switch is on. It sees no news and no data beyond the snapshot the bot sends it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modes -->
+  <section id="tab-modes" class="tab">
+    <div class="card">
+      <div class="card-title">Trading mode <span class="muted small">sets the risk limits and how eagerly the bot enters</span></div>
+      <div class="modes" id="mode-cards"></div>
+      <p class="muted small" id="mode-note" style="margin-bottom:0"></p>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">What changes</div>
+      <div class="table-wrap">
+        <table class="data" id="mode-table">
+          <thead><tr><th>Setting</th><th class="num">Safe</th><th class="num">Balanced</th><th class="num">Aggressive</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted small">A mode is a starting point. After applying one you can still change any single value in Settings; the mode badge then shows as "custom".</p>
+    </div>
+  </section>
+
+  <!-- History -->
   <section id="tab-trades" class="tab">
     <div class="card">
       <div class="card-title">Closed trades <span class="muted small" id="trades-count"></span></div>
@@ -146,7 +277,7 @@
             <label>To <input type="date" id="bt-to"></label>
             <label>Starting cash <input type="number" id="bt-cash" min="1" step="100" placeholder="from config"></label>
           </div>
-          <div class="muted small">Dates are optional for a CSV file and required for a download. Strategy and risk settings come from the Settings tab.</div>
+          <div class="muted small">Dates are optional for a CSV file and required for a download. Strategy and risk settings come from the Settings tab. The AI strategy is not backtested: it would call the model once per candle.</div>
           <div class="row"><button type="submit" class="primary" id="bt-run">Run backtest</button><span id="bt-status" class="muted"></span></div>
         </form>
         <div id="bt-result" class="hidden">
@@ -157,8 +288,8 @@
       </div>
       <div class="card">
         <div class="card-title">How to read it</div>
-        <p class="muted">Signals are computed on a closed candle and filled at the next candle's open. Stops and take-profits fill at their level, or at the open when a candle gaps through them. Fees and slippage from Settings are applied to every fill.</p>
-        <p class="muted"><strong>Backtest results are hypothetical.</strong> Past performance does not predict future returns. A strategy that looks good on one period can lose on the next.</p>
+        <p class="muted small">Signals are computed on a closed candle and filled at the next candle's open. Stops and take-profits fill at their level, or at the open when a candle gaps through them. Fees and slippage from Settings are applied to every fill.</p>
+        <p class="muted small"><strong>Backtest results are hypothetical.</strong> Past performance does not predict future returns. A strategy that looks good on one period can lose on the next.</p>
       </div>
     </div>
   </section>
@@ -177,7 +308,17 @@
       </div>
       <div class="stack">
         <div class="card">
-          <div class="card-title">Exchange API keys & live trading</div>
+          <div class="card-title">Appearance</div>
+          <div class="form">
+            <label>Theme <select id="theme-select"></select></label>
+            <label class="check"><input type="checkbox" id="anim-toggle" checked> Animations</label>
+            <label>Animation speed <select id="anim-speed">
+              <option value="1.4">Calm</option><option value="1" selected>Normal</option><option value="0.65">Snappy</option>
+            </select></label>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Exchange API keys &amp; live trading</div>
           <p class="muted small">Keys are stored in <code id="env-path">.env</code> next to the app and never leave your computer. Create the key with <strong>trade + read only, no withdrawals</strong>. Leave a field empty to keep its current value.</p>
           <form id="sec-form" class="form">
             <label>API key <input type="password" id="sec-key" autocomplete="off"><span class="muted small" id="sec-key-state"></span></label>
@@ -199,7 +340,7 @@
             <button id="upd-check" class="ghost">Check now</button>
             <button id="upd-install" class="primary" disabled>Install update</button>
           </div>
-          <p class="muted small">Every new build published on GitHub is detected within the check interval (see "update" in Bot settings). With auto-install on, the app updates itself while the bot is stopped; while it is running you get a notification and a button instead. Keys, settings and history are kept.</p>
+          <p class="muted small">Every new build published on GitHub is detected within the check interval. With auto-install on, the app updates itself while the bot is stopped; while it is running you get a notification and a button instead.</p>
           <form id="gh-form" class="form">
             <label>GitHub token (only for a private repository) <input type="password" id="gh-token" autocomplete="off"></label>
             <div class="row"><button class="ghost" id="gh-save">Save token</button></div>
@@ -218,20 +359,34 @@
     </div>
   </section>
 
-  <!-- Log -->
+  <!-- Log channel -->
   <section id="tab-log" class="tab">
     <div class="card">
-      <div class="card-title">Log
-        <label class="inline"><input type="checkbox" id="log-important" checked> important only</label>
+      <div class="card-title">Log <span class="muted small">what the bot did: orders, trades, halts, errors</span>
         <label class="inline"><input type="checkbox" id="log-follow" checked> follow</label>
+        <button id="log-clear" class="ghost small-btn">Clear view</button>
         <span class="muted small" id="log-file"></span>
       </div>
       <div class="log" id="log"></div>
     </div>
   </section>
+
+  <!-- Debug channel -->
+  <section id="tab-debug" class="tab">
+    <div class="card">
+      <div class="card-title">Debug <span class="muted small">every cycle, every fetch, raw payloads</span>
+        <label class="inline"><input type="checkbox" id="debug-follow" checked> follow</label>
+        <label class="inline"><input type="text" id="debug-filter" placeholder="filter text" style="width:180px"></label>
+        <button id="debug-clear" class="ghost small-btn">Clear view</button>
+        <button id="debug-copy" class="ghost small-btn">Copy last 200</button>
+      </div>
+      <div class="log" id="debug-log"></div>
+    </div>
+  </section>
 </main>
 
-<footer class="muted small"><span id="version"></span> · Spot only, no leverage · This software can lose money; paper trade first.</footer>
+<footer><span id="version"></span> · Spot only, no leverage · This software can lose money; paper trade first.</footer>
+<div id="toasts"></div>
 
 <dialog id="confirm-live">
   <h3>Start LIVE trading?</h3>
@@ -239,6 +394,12 @@
   <p>Type <code>LIVE</code> to confirm.</p>
   <input id="live-typed" autocomplete="off">
   <div class="row"><button id="live-cancel" class="ghost">Cancel</button><button id="live-go" class="danger" disabled>Start live</button></div>
+</dialog>
+
+<dialog id="confirm-order">
+  <h3 id="co-title">Confirm order</h3>
+  <p id="co-body"></p>
+  <div class="row"><button id="co-cancel" class="ghost">Cancel</button><button id="co-go" class="primary">Place order</button></div>
 </dialog>
 
 <script src="app.js"></script>

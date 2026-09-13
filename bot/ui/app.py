@@ -31,12 +31,14 @@ from bot.data.feed import rows_to_frame
 from bot.data.history import cache_path, download_ohlcv, load_csv
 from bot.strategy import STRATEGIES, get_strategy
 from bot.logging_utils import EventBufferHandler, log_event
+from bot.models import Side
+from bot.modes import DEFAULT_MODE, MODES, apply_mode, detect_mode, mode_list
 from bot.main import Runtime, build_runtime, run_loop
 from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -145,7 +147,17 @@ class BotController:
         return self.load_cfg().printable()
 
     def config_meta(self) -> dict[str, Any]:
-        return {"strategies": sorted(STRATEGIES), "timeframes": TIMEFRAMES, "exchanges": EXCHANGES}
+        return {"strategies": sorted(STRATEGIES), "timeframes": TIMEFRAMES, "exchanges": EXCHANGES,
+                "modes": mode_list()}
+
+    def set_mode(self, mode: str) -> dict[str, Any]:
+        """Apply a trading mode's risk limits and strategy parameters to config.yaml."""
+        data = apply_mode(self.load_cfg().printable(), mode)
+        cfg = self.save_config(data)
+        log_event(log, "mode_changed", level=logging.WARNING, mode=mode,
+                  detail=f"Trading mode set to {MODES[mode]['label']}: {MODES[mode]['summary']}",
+                  risk=cfg.risk.model_dump())
+        return {"mode": mode, "config": cfg.printable()}
 
     def config_yaml(self) -> str:
         return self.config_path.read_text(encoding="utf-8")
@@ -193,6 +205,60 @@ class BotController:
         if clean:
             write_dotenv(self.env_path, clean)
         return self.secrets_status()
+
+    # ----- manual trading -------------------------------------------------------------------
+    def manual_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        rt = self.runtime
+        if rt is None or self.state != "running":
+            raise RuntimeError("start the bot first: manual orders use its exchange connection")
+        side_text = str(payload.get("side", "")).lower()
+        if side_text not in ("buy", "sell"):
+            raise ValueError("side must be buy or sell")
+
+        def number(key: str) -> float | None:
+            v = payload.get(key)
+            if v in (None, ""):
+                return None
+            f = float(v)
+            if f <= 0:
+                raise ValueError(f"{key} must be a positive number")
+            return f
+
+        out = rt.engine.manual_order(
+            Side(side_text), qty=number("qty"), quote_amount=number("quote_amount"),
+            stop_loss=number("stop_loss"), take_profit=number("take_profit"),
+            reason=str(payload.get("reason") or "manual order from the UI")[:200],
+        )
+        rt.notifier.send(f"manual {side_text.upper()} {out['order']['filled']:.6f} @ {out['price']:.2f}")
+        return out
+
+    def set_levels(self, payload: dict[str, Any]) -> dict[str, Any]:
+        rt = self.runtime
+        if rt is None or self.state != "running":
+            raise RuntimeError("start the bot first")
+
+        def number(key: str) -> float | None:
+            v = payload.get(key)
+            return None if v in (None, "") else float(v)
+
+        return rt.engine.set_protective_levels(number("stop_loss"), number("take_profit"))
+
+    def ai_status(self) -> dict[str, Any]:
+        try:
+            cfg = self.load_cfg()
+        except Exception:  # noqa: BLE001
+            return {"enabled": False}
+        rt = self.runtime
+        strategy = rt.engine.strategy if rt is not None else None
+        info: dict[str, Any] = {
+            "enabled": cfg.strategy.name == "ai",
+            "key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "model": cfg.strategy.params.get("model", "claude-opus-5") if cfg.strategy.name == "ai" else None,
+        }
+        if strategy is not None and getattr(strategy, "name", "") == "ai":
+            info.update({"calls": getattr(strategy, "calls", 0), "failures": getattr(strategy, "failures", 0),
+                         "last_call": getattr(strategy, "last_call", {})})
+        return info
 
     # ----- bot lifecycle ------------------------------------------------------------------
     def start(self, *, replay: str | None = None, replay_delay: float = 0.25, confirm_live: bool = False) -> dict[str, Any]:
@@ -311,7 +377,8 @@ class BotController:
             self.last_cycle = item
             self.cycles = int(item.get("cycle", self.cycles) or 0)
         elif ev in ("trade_closed", "position_opened", "risk_event", "cycle_error", "protective_exit_blocked",
-                    "replay_finished", "startup_refused", "shutdown", "reconcile"):
+                    "replay_finished", "startup_refused", "shutdown", "reconcile", "manual_order",
+                    "mode_changed", "levels_changed"):
             self.recent_alerts = (self.recent_alerts + [item])[-30:]
 
     # ----- kill switch --------------------------------------------------------------------
@@ -336,6 +403,7 @@ class BotController:
             cfg_summary: dict[str, Any] = {
                 "exchange": cfg.exchange.id, "symbol": cfg.exchange.symbol, "timeframe": cfg.exchange.timeframe,
                 "live": cfg.exchange.live, "strategy": cfg.strategy.name, "initial_cash": cfg.paper.initial_cash,
+                "mode": cfg.mode, "mode_matches": detect_mode(cfg.printable()) == cfg.mode,
                 "risk_per_trade_pct": cfg.risk.risk_per_trade_pct, "max_daily_loss_pct": cfg.risk.max_daily_loss_pct,
                 "max_position_pct": cfg.risk.max_position_pct,
             }
@@ -347,11 +415,16 @@ class BotController:
                              and secrets["api_key_set"] and secrets["api_secret_set"])
         last = self.last_cycle
         position = last.get("position")
+        equity, cash = last.get("equity"), last.get("cash")
         rt = self.runtime
         if rt is not None and rt.engine is not None:
             try:
                 position = rt.engine.position.to_dict() if rt.engine.position else None
-            except Exception:  # noqa: BLE001
+                price_now = last.get("price") or last.get("close")
+                if price_now:
+                    acct = rt.engine.account(float(price_now))
+                    equity, cash = round(acct.equity, 2), round(acct.cash, 2)
+            except Exception:  # noqa: BLE001 - status must never fail
                 pass
         try:
             kill = self.kill_switch_path().exists()
@@ -373,13 +446,16 @@ class BotController:
             "last_cycle": last,
             "position": position,
             "price": last.get("price") or last.get("close"),
-            "equity": last.get("equity"),
-            "cash": last.get("cash"),
+            "equity": equity,
+            "cash": cash,
             "risk": last.get("risk"),
             "signal": last.get("signal"),
             "decision": last.get("decision"),
             "alerts": self.recent_alerts[-10:],
             "backtest_state": self.backtest.get("state"),
+            "trading_mode": (cfg_summary or {}).get("mode"),
+            "trading_modes": mode_list(),
+            "ai": self.ai_status(),
             "update": {**self.updater.status(), "build_info": self.build_info},
             "paths": {"root": str(self.root), "config": str(self.config_path), "db": str(self.db_path()),
                       "log": str(self.root / "data" / "bot.log"), "temporary": looks_temporary(self.root)},
