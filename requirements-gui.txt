@@ -2,3 +2,4 @@
 # without it the app opens in the default browser, which also works.
 pyinstaller>=6.0
 pywebview>=5.0; sys_platform == "win32"
+pillow>=10.0   # only needed to regenerate assets/ with scripts/make_icon.py

@@ -30,6 +30,7 @@ from bot.config import (
 from bot.data.feed import rows_to_frame
 from bot.data.history import cache_path, download_ohlcv, load_csv
 from bot.strategy import STRATEGIES, get_strategy
+from bot.licensing import LicenseManager
 from bot.logging_utils import EventBufferHandler, log_event
 from bot.models import Side
 from bot.modes import DEFAULT_MODE, MODES, apply_mode, detect_mode, mode_list
@@ -38,7 +39,7 @@ from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -72,6 +73,8 @@ def prepare_app_dir(root: Path) -> None:
     src = bundle_dir()
     if not (root / "config.yaml").exists() and (src / "config.yaml").exists():
         shutil.copy(src / "config.yaml", root / "config.yaml")
+    if (src / "CHANGELOG.md").exists():  # refreshed on every start so it matches the build
+        shutil.copy(src / "CHANGELOG.md", root / "CHANGELOG.md")
     samples_src = src / "data" / "samples"
     if samples_src.is_dir():
         samples_dst = root / "data" / "samples"
@@ -114,6 +117,7 @@ class BotController:
         self._chart_cache: dict[str, Any] = {}
         self._chart_lock = threading.Lock()
         self.market_factory: Any = None  # tests inject a fake market data source here
+        self.licenses = LicenseManager(self.root)
         self.build_info = read_build_info(bundle_dir(), VERSION)
         current = Version.parse(f"v{self.build_info['version']}-build.{self.build_info['build']}") or Version.parse(f"v{VERSION}")
         try:
@@ -206,6 +210,42 @@ class BotController:
             write_dotenv(self.env_path, clean)
         return self.secrets_status()
 
+    # ----- licensing & changelog ------------------------------------------------------------
+    def license_status(self) -> dict[str, Any]:
+        return self.licenses.status()
+
+    def activate_license(self, key: str) -> dict[str, Any]:
+        lic = self.licenses.activate(key)
+        if lic.valid:
+            log_event(log, "license_activated", level=logging.WARNING, detail=f"License activated ({lic.masked})")
+        return {**self.licenses.status(), "accepted": lic.valid, "reason": lic.reason}
+
+    def deactivate_license(self) -> dict[str, Any]:
+        self.licenses.deactivate()
+        return self.licenses.status()
+
+    def changelog(self, only_version: str | None = None) -> dict[str, Any]:
+        """The CHANGELOG split into entries, newest first."""
+        for candidate in (self.root / "CHANGELOG.md", bundle_dir() / "CHANGELOG.md"):
+            if candidate.exists():
+                text = candidate.read_text(encoding="utf-8")
+                break
+        else:
+            return {"entries": [], "current": self.build_info.get("version")}
+        entries: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for line in text.splitlines():
+            if line.startswith("## "):
+                current = {"version": line[3:].strip(), "lines": []}
+                entries.append(current)
+            elif current is not None:
+                current["lines"].append(line)
+        for e in entries:
+            e["body"] = "\n".join(e.pop("lines")).strip()
+        if only_version:
+            entries = [e for e in entries if e["version"] == only_version]
+        return {"entries": entries, "current": self.build_info.get("version")}
+
     # ----- manual trading -------------------------------------------------------------------
     def manual_order(self, payload: dict[str, Any]) -> dict[str, Any]:
         rt = self.runtime
@@ -279,8 +319,10 @@ class BotController:
                     log.info("replay requested: running in paper mode regardless of live switches")
             else:
                 mode = resolve_mode(cfg, secrets)
-                if mode == "live" and not confirm_live:
-                    raise LiveSafetyError("Live mode needs explicit confirmation from the UI.")
+                if mode == "live":
+                    self.licenses.require_for_live()
+                    if not confirm_live:
+                        raise LiveSafetyError("Live mode needs explicit confirmation from the UI.")
             self._stop = threading.Event()
             self.state, self.error, self.mode = "starting", None, mode
             self.last_cycle, self.cycles, self.started_at = {}, 0, None
@@ -453,6 +495,7 @@ class BotController:
             "decision": last.get("decision"),
             "alerts": self.recent_alerts[-10:],
             "backtest_state": self.backtest.get("state"),
+            "license": self.license_status(),
             "trading_mode": (cfg_summary or {}).get("mode"),
             "trading_modes": mode_list(),
             "ai": self.ai_status(),

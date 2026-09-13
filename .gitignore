@@ -19,3 +19,7 @@ build/
 dist/
 package/
 *.zip
+
+# License keys: hashes ship in bot/license_hashes.json, the keys stay private.
+licenses-private.csv
+licenses-*.csv

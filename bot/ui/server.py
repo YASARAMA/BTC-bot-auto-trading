@@ -36,6 +36,8 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         try:
             return c.start(replay=body.get("replay") or None, replay_delay=float(body.get("replay_delay", 0.25)),
                            confirm_live=bool(body.get("confirm_live")))
+        except PermissionError as exc:  # unlicensed copy trying to trade live
+            raise ApiError(403, str(exc)) from exc
         except LiveSafetyError as exc:
             raise ApiError(403, str(exc)) from exc
         except FileNotFoundError as exc:
@@ -100,6 +102,17 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         except ValueError as exc:
             raise ApiError(400, str(exc)) from exc
 
+    def license_action(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        action = body.get("action", "activate")
+        if action == "activate":
+            out = c.activate_license(str(body.get("key", "")))
+            if not out.get("accepted"):
+                raise ApiError(400, out.get("reason", "invalid key"))
+            return out
+        if action == "remove":
+            return c.deactivate_license()
+        raise ApiError(400, f"unknown license action {action!r}")
+
     def quit_app(q: dict[str, Any], body: dict[str, Any]) -> Any:
         threading.Thread(target=c.quit, daemon=True).start()
         return {"ok": True}
@@ -124,6 +137,9 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         ("POST", "/api/order"): manual_order,
         ("POST", "/api/levels"): set_levels,
         ("POST", "/api/mode"): set_mode,
+        ("GET", "/api/license"): lambda q, b: c.license_status(),
+        ("POST", "/api/license"): license_action,
+        ("GET", "/api/changelog"): lambda q, b: c.changelog(q.get("version")),
         ("GET", "/api/update"): lambda q, b: c.updater.status(),
         ("POST", "/api/update"): update_action,
     }

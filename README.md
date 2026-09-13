@@ -52,6 +52,9 @@ when a version tag such as `v0.2.0` is pushed. Unzip and double-click `BTCBot.ex
   **Debug**.
 - Four themes (Obsidian, Midnight, Terminal, Daylight), animations that can be turned off,
   and toast notifications for fills, trades and risk events.
+- A splash screen while Windows unpacks the executable, an animated boot screen while the
+  dashboard connects, and a "what's new" panel after every update (`CHANGELOG.md`).
+- Pressing **Update** downloads, verifies, installs and restarts the app in one step.
 - `BTCBot-console.exe` is the same app with a console window, useful when something fails
   before the UI appears. Logs also go to `data/bot.log`.
 
@@ -145,6 +148,29 @@ Before trading, `TradingEngine.reconcile()`:
 - compares the recorded position with the base-currency balance and shrinks or clears the
   position if the coins are not there (a warning is logged);
 - ignores, but reports, coins in the account that the bot did not buy.
+
+## License keys
+
+Live trading needs a key (`BTCB-XXXXX-XXXXX-XXXXX-XXXXX`), entered once under Settings.
+Paper trading, backtesting, the charts and the AI trader all work without one, so the bot
+can be evaluated safely before buying.
+
+The build ships only the SHA-256 hash of each valid key (`bot/license_hashes.json`), so
+the executable carries nothing that could mint new keys, and activation works offline.
+Generate and re-issue keys with:
+
+```bash
+python scripts/make_licenses.py --count 100      # replaces the whole list
+python scripts/make_licenses.py --count 20 --add # keeps the existing keys valid
+```
+
+That writes `licenses-private.csv` with the keys themselves. **Keep that file private and
+never commit it** (it is in `.gitignore`); ship keys to buyers from there, and use the
+`issued_to` column to record who has which. Re-running without `--add` invalidates every
+previously issued key on the next build.
+
+This is honest licensing, not copy protection: keys can be shared, and anyone who can edit
+the source can bypass the check. It exists to make ownership clear.
 
 ## Trading modes
 

@@ -205,6 +205,7 @@
     $('version').textContent = `BTC Bot ${s.version}`; $('log-file').textContent = s.paths ? s.paths.log : '';
     if (s.secrets) $('env-path').textContent = s.secrets.env_file;
     renderUpdate(s.update);
+    renderLicense(s.license);
     if (document.querySelector('#tab-trade').classList.contains('active')) renderTrade();
     if (document.querySelector('#tab-ai').classList.contains('active')) renderAi();
     const tw = $('temp-warning');
@@ -229,11 +230,19 @@
   async function poll() {
     try {
       const s = await api('/api/status');
+      bootStep('connect');
+      bootStep('config', !s.config_error, s.config_error ? `Settings problem: ${s.config_error}` : null);
+      bootStep('state');
+      bootStep('ready');
       renderStatus(s);
+      setTimeout(bootFinish, 500);
       const v = (s.cycles || 0) + ':' + (s.state);
       if (v !== equityVersion) { equityVersion = v; loadEquity(); }
       ensureStream();
-    } catch (e) { $('state-text').textContent = `disconnected: ${e.message}`; $('state-dot').className = 'dot error'; }
+    } catch (e) {
+      $('state-text').textContent = `disconnected: ${e.message}`; $('state-dot').className = 'dot error';
+      bootStep('connect', false, `Cannot reach the engine: ${e.message}`);
+    }
     try {
       const { events } = await api(`/api/events?since=${lastEventId}&limit=300`);
       if (events.length) { appendLog(events); lastEventId = events[events.length - 1].id; }
@@ -683,10 +692,27 @@
     $('upd-install').disabled = !(u.available && u.can_install) || updating;
   }
   async function installUpdate() {
-    if (!(await confirmDialog('Update and restart?', 'The new version is downloaded and verified, then the app restarts. A running bot is stopped first and resumes its state afterwards.'))) return;
-    updating = true; $('update-text').textContent = 'Downloading the update… the app restarts by itself in a moment.'; $('update-install').classList.add('hidden'); $('update-banner').classList.remove('hidden');
-    try { await api('/api/update', { action: 'install' }); $('update-text').textContent = 'Update installed. Restarting… if no new window appears within a minute, start BTCBot.exe again.'; }
-    catch (e) { updating = false; showAlert(`Update failed: ${e.message}`, 'error', 15000); }
+    updating = true;
+    $('update-install').classList.add('hidden'); $('update-banner').classList.remove('hidden');
+    $('update-text').textContent = 'Downloading and verifying the update…';
+    $('upd-install').disabled = true;
+    const tick = setInterval(async () => {
+      try {
+        const u = await api('/api/update');
+        if (u.state === 'downloading' && u.progress.total) {
+          $('update-text').textContent = `Downloading the update… ${Math.round(u.progress.done / u.progress.total * 100)}%`;
+        } else if (u.state === 'installing') $('update-text').textContent = 'Installing…';
+        else if (u.state === 'restarting') $('update-text').textContent = 'Restarting the app…';
+      } catch (e) { /* the server is going away, that is expected */ }
+    }, 700);
+    try {
+      await api('/api/update', { action: 'install' });
+      $('update-text').textContent = 'Updated. The new version is starting — this window closes by itself.';
+      setTimeout(() => { clearInterval(tick); document.body.innerHTML = '<div id="boot"><div class="boot-card"><div class="boot-logo"><img src="icon.png" width="84" height="84" alt=""></div><div class="boot-title">Updated</div><div class="boot-sub">The new version is starting. You can close this window.</div></div></div>'; }, 2500);
+    } catch (e) {
+      clearInterval(tick); updating = false; $('upd-install').disabled = false;
+      showAlert(`Update failed: ${e.message}`, 'error', 15000);
+    }
   }
   $('update-install').addEventListener('click', installUpdate);
   $('upd-install').addEventListener('click', installUpdate);
@@ -853,6 +879,115 @@
   }
   function disconnectStream() { if (chart.ws) { const ws = chart.ws; chart.ws = null; try { ws.close(); } catch (e) { /* ignore */ } } chart.wsKey = null; setLiveBadge('off'); }
 
+
+  // ----- license -----
+  function renderLicense(l) {
+    if (!l) return;
+    const badge = $('lic-badge');
+    badge.textContent = l.licensed ? 'licensed' : 'unlicensed';
+    badge.classList.toggle('ok', !!l.licensed);
+    $('lic-state').textContent = l.licensed
+      ? `${l.masked}${l.activated_at ? ' · activated ' + l.activated_at.slice(0, 10) : ''}`
+      : (l.reason || '');
+    $('lic-remove').classList.toggle('hidden', !l.licensed);
+    $('lic-key').placeholder = l.licensed ? l.masked : 'BTCB-XXXXX-XXXXX-XXXXX-XXXXX';
+    $('license-foot').innerHTML = l.licensed
+      ? `<span class="pos">licensed</span>`
+      : `<a href="#" id="license-link">unlicensed — paper trading only</a>`;
+    const link = $('license-link');
+    if (link) link.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.querySelector('.tabs button[data-tab=settings]').click();
+      $('license-card').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      $('lic-key').focus();
+    });
+  }
+  $('lic-activate').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try {
+      const out = await api('/api/license', { action: 'activate', key: $('lic-key').value });
+      $('lic-key').value = ''; renderLicense(out);
+      toast('License activated', 'Live trading is unlocked on this computer.', 'up');
+      poll();
+    } catch (err) { showAlert(err.message, 'error', 10000); }
+  });
+  $('lic-remove').addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (!(await confirmDialog('Remove the license from this computer?', 'Live trading stops working until a key is entered again. Paper trading is unaffected.'))) return;
+    try { renderLicense(await api('/api/license', { action: 'remove' })); toast('License removed'); poll(); }
+    catch (err) { showAlert(err.message); }
+  });
+
+  // ----- what's new -----
+  function mdToHtml(body) {
+    // Bullets wrap across lines in the changelog: a line that is not a new '- ' item
+    // continues the previous one.
+    const items = [];
+    body.split('\n').forEach((line) => {
+      const t = line.trim();
+      if (!t) return;
+      if (t.startsWith('- ')) items.push(t.slice(2));
+      else if (items.length) items[items.length - 1] += ' ' + t;
+      else items.push(t);
+    });
+    const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const render = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    if (!items.length) return `<p class="muted">${render(body)}</p>`;
+    return '<ul>' + items.map((i) => `<li>${render(i)}</li>`).join('') + '</ul>';
+  }
+  async function showWhatsNew(all = false) {
+    try {
+      const data = await api('/api/changelog');
+      const entries = all ? data.entries : data.entries.slice(0, 1);
+      if (!entries.length) { showAlert('No changelog found in this build.', 'warn'); return; }
+      $('wn-title').innerHTML = all ? 'Release history' : `What&rsquo;s new in ${entries[0].version}`;
+      $('wn-body').innerHTML = entries.map((e) => `${all ? `<div class="wn-version">Version ${e.version}</div>` : ''}${mdToHtml(e.body)}`).join('');
+      $('wn-all').textContent = all ? 'Newest only' : 'Older versions';
+      $('wn-all').onclick = () => showWhatsNew(!all);
+      $('whats-new').showModal();
+      store.set('seenVersion', data.current || '');
+    } catch (e) { showAlert(e.message); }
+  }
+  $('wn-close').addEventListener('click', () => $('whats-new').close());
+  $('show-whats-new').addEventListener('click', (e) => { e.preventDefault(); showWhatsNew(false); });
+
+  // ----- loading screen -----
+  const BOOT_STEPS = [
+    ['connect', 'Connecting to the trading engine'],
+    ['config', 'Reading settings and license'],
+    ['state', 'Loading positions and history'],
+    ['ready', 'Ready'],
+  ];
+  const boot = { done: new Set(), finished: false };
+  function bootInit() {
+    $('boot-steps').innerHTML = BOOT_STEPS.map(([id, label]) =>
+      `<li data-step="${id}"><span class="mark">○</span><span>${label}</span></li>`).join('');
+  }
+  function bootStep(id, ok = true, label = null) {
+    if (boot.finished) return;
+    boot.done.add(id);
+    const li = $('boot-steps').querySelector(`[data-step="${id}"]`);
+    if (li) {
+      li.classList.toggle('done', ok); li.classList.toggle('fail', !ok);
+      li.querySelector('.mark').textContent = ok ? '✓' : '✕';
+      if (label) li.lastElementChild.textContent = label;
+    }
+    $('boot-bar').style.width = `${Math.round(boot.done.size / BOOT_STEPS.length * 100)}%`;
+    const next = BOOT_STEPS.find(([s]) => !boot.done.has(s));
+    $('boot-sub').textContent = ok ? (next ? next[1] + '…' : 'Ready') : (label || 'Something went wrong');
+  }
+  function bootFinish() {
+    if (boot.finished) return;
+    boot.finished = true;
+    const el = $('boot');
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 600);
+    const seen = store.get('seenVersion', null);
+    const current = (status.update && status.update.current) ? status.update.current.version : null;
+    if (current && seen !== current && seen !== null) setTimeout(() => showWhatsNew(false), 900);
+    else if (current && seen === null) store.set('seenVersion', current);
+  }
+  bootInit();
 
   // ----- boot -----
   const startTab = store.get('tab', 'dashboard');

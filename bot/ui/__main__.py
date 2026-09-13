@@ -35,6 +35,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def close_splash() -> None:
+    """Dismiss the PyInstaller splash screen, if this build has one."""
+    try:
+        import pyi_splash  # type: ignore
+
+        pyi_splash.update_text("ready")
+        pyi_splash.close()
+    except Exception:  # noqa: BLE001 - absent in development and on non-splash builds
+        pass
+
+
 def _open_native(url: str, quit_event: threading.Event) -> bool:
     """Try a native window through pywebview. Returns False if that is not possible."""
     try:
@@ -71,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
                   extra_handlers=[controller.events])
     server = UIServer(controller, port=args.port)
     server.start()
+    close_splash()
     log_event(log, "ui_started", version=VERSION, build=controller.build_info, url=server.url, root=str(root), frozen=is_frozen())
 
     if args.smoke:

@@ -332,3 +332,48 @@ def test_ai_status_is_reported(ui, monkeypatch):
     st = call(server, "/api/status")[1]["ai"]
     assert st["enabled"] is True and st["key_set"] is True and st["model"] == "claude-sonnet-5"
     assert "sk-ant-test" not in json.dumps(call(server, "/api/status")[1])
+
+
+def test_license_api_and_live_gate(ui, monkeypatch):
+    root, c, server = ui
+    import csv as _csv
+    from pathlib import Path as _Path
+
+    code, lic = call(server, "/api/license")
+    assert code == 200 and lic["licensed"] is False and lic["keys_in_build"] == 100
+    assert call(server, "/api/license", {"action": "activate", "key": "nope"})[0] == 400
+    assert call(server, "/api/license", {"action": "bogus"})[0] == 400
+
+    private = _Path("licenses-private.csv")
+    if not private.exists():
+        pytest.skip("the private key list is not on this machine")
+    key = next(iter(_csv.DictReader(private.open(newline="", encoding="utf-8"))))["key"]
+
+    # Live start is refused while unlicensed, even with both safety switches set.
+    monkeypatch.setenv("LIVE_TRADING", "true")
+    monkeypatch.setenv("EXCHANGE_API_KEY", "k")
+    monkeypatch.setenv("EXCHANGE_API_SECRET", "s")
+    cfg = call(server, "/api/config")[1]["config"]
+    cfg["exchange"]["live"] = True
+    call(server, "/api/config", {"config": cfg})
+    code, err = call(server, "/api/start", {"confirm_live": True})
+    assert code in (400, 403) and "license" in err["error"].lower()
+
+    code, out = call(server, "/api/license", {"action": "activate", "key": key.lower()})
+    assert code == 200 and out["licensed"] is True and out["accepted"] is True
+    assert key not in json.dumps(out) and out["masked"].endswith(key.split("-")[-1])
+    assert call(server, "/api/status")[1]["license"]["licensed"] is True
+    assert (root / "data" / "license.json").exists()
+
+    assert call(server, "/api/license", {"action": "remove"})[1]["licensed"] is False
+
+
+def test_changelog_endpoint(ui):
+    root, c, server = ui
+    code, data = call(server, "/api/changelog")
+    assert code == 200 and data["entries"], "the build ships CHANGELOG.md"
+    newest = data["entries"][0]
+    assert newest["version"] == data["current"], "the newest entry matches this build"
+    assert "- " in newest["body"]
+    one = call(server, f"/api/changelog?version={newest['version']}")[1]
+    assert len(one["entries"]) == 1 and one["entries"][0]["version"] == newest["version"]

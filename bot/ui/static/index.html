@@ -5,14 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="token" content="__TOKEN__">
 <title>BTC Bot</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/png" href="icon.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="boot">
+  <div class="boot-card">
+    <div class="boot-logo"><img src="icon.png" alt="BTC Bot" width="84" height="84"></div>
+    <div class="boot-title">BTC Bot</div>
+    <div class="boot-sub" id="boot-sub">starting the trading engine…</div>
+    <div class="boot-rail"><i id="boot-bar"></i></div>
+    <ul class="boot-steps" id="boot-steps"></ul>
+    <div class="boot-note">Spot only · paper mode by default · this software can lose money</div>
+  </div>
+</div>
 <div class="topwrap">
 <header class="topbar">
   <div class="brand">
-    <span class="logo">₿</span>
+    <span class="logo"><img src="icon.png" alt="" width="38" height="38"></span>
     <div>
       <div class="title">BTC Bot</div>
       <div class="subtitle" id="cfg-summary">loading…</div>
@@ -317,6 +327,15 @@
             </select></label>
           </div>
         </div>
+        <div class="card" id="license-card">
+          <div class="card-title">License <span class="badge" id="lic-badge">unlicensed</span></div>
+          <p class="muted small">Paper trading, backtesting, the charts and the AI trader work without a license.
+            A key is needed only to place <strong>real orders</strong>.</p>
+          <form id="lic-form" class="form">
+            <label>License key <input type="text" id="lic-key" autocomplete="off" placeholder="BTCB-XXXXX-XXXXX-XXXXX-XXXXX" spellcheck="false"></label>
+            <div class="row"><button class="primary" id="lic-activate">Activate</button><button class="ghost hidden" id="lic-remove">Remove license</button><span class="muted small" id="lic-state"></span></div>
+          </form>
+        </div>
         <div class="card">
           <div class="card-title">Exchange API keys &amp; live trading</div>
           <p class="muted small">Keys are stored in <code id="env-path">.env</code> next to the app and never leave your computer. Create the key with <strong>trade + read only, no withdrawals</strong>. Leave a field empty to keep its current value.</p>
@@ -385,7 +404,7 @@
   </section>
 </main>
 
-<footer><span id="version"></span> · Spot only, no leverage · This software can lose money; paper trade first.</footer>
+<footer><span id="version"></span> · <a href="#" id="show-whats-new">what&rsquo;s new</a> · <span id="license-foot"></span> · Spot only, no leverage · This software can lose money; paper trade first.</footer>
 <div id="toasts"></div>
 
 <dialog id="confirm-live">
@@ -394,6 +413,12 @@
   <p>Type <code>LIVE</code> to confirm.</p>
   <input id="live-typed" autocomplete="off">
   <div class="row"><button id="live-cancel" class="ghost">Cancel</button><button id="live-go" class="danger" disabled>Start live</button></div>
+</dialog>
+
+<dialog id="whats-new" class="wide">
+  <h3 id="wn-title">What&rsquo;s new</h3>
+  <div class="wn-body" id="wn-body"></div>
+  <div class="row"><button id="wn-all" class="ghost">Older versions</button><button id="wn-close" class="primary">Got it</button></div>
 </dialog>
 
 <dialog id="confirm-order">
