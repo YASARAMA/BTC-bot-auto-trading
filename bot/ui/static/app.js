@@ -237,7 +237,7 @@
       renderStatus(s);
       setTimeout(bootFinish, 500);
       const v = (s.cycles || 0) + ':' + (s.state);
-      if (v !== equityVersion) { equityVersion = v; loadEquity(); }
+      if (v !== equityVersion) { equityVersion = v; loadEquity(); loadWhy(); }
       ensureStream();
     } catch (e) {
       $('state-text').textContent = `disconnected: ${e.message}`; $('state-dot').className = 'dot error';
@@ -642,12 +642,50 @@
   });
 
   // ----- backtest -----
+  let sampleDetails = [];
+  function applySampleRange() {
+    const sel = $('bt-source').value;
+    const d = sampleDetails.find((x) => x.path === sel);
+    const from = $('bt-from'), to = $('bt-to');
+    if (!sel) {  // downloading: any date, both required
+      $('bt-range').textContent = 'downloads need a start and an end date';
+      $('bt-hint').textContent = 'Candles are downloaded from the exchange in Settings and cached.';
+      [from, to].forEach((i) => { i.removeAttribute('min'); i.removeAttribute('max'); });
+      return;
+    }
+    if (!d || d.error) { $('bt-range').textContent = d && d.error ? `unreadable: ${d.error}` : ''; return; }
+    $('bt-range').textContent = `covers ${d.from} → ${d.to} · ${d.candles.toLocaleString()} candles`;
+    [from, to].forEach((i) => { i.min = d.from; i.max = d.to; });
+    const outside = (v) => v && (v < d.from || v > d.to);
+    if (outside(from.value) || outside(to.value)) {
+      from.value = ''; to.value = '';
+      $('bt-hint').textContent = `Dates outside ${d.from} → ${d.to} were cleared; the whole file will be used.`;
+    } else {
+      $('bt-hint').textContent = (from.value || to.value) ? '' : 'No dates: the whole file is used.';
+    }
+  }
+  $('bt-whole').addEventListener('click', () => { $('bt-from').value = ''; $('bt-to').value = ''; applySampleRange(); });
+  $('bt-source').addEventListener('change', applySampleRange);
+  ['bt-from', 'bt-to'].forEach((id) => $(id).addEventListener('change', () => {
+    const d = sampleDetails.find((x) => x.path === $('bt-source').value);
+    const v = $(id).value;
+    if (d && d.from && v && (v < d.from || v > d.to)) {
+      $('bt-hint').textContent = `That date is outside the file (${d.from} → ${d.to}).`;
+    } else $('bt-hint').textContent = '';
+  }));
   async function loadSamples() {
     try {
-      const { samples } = await api('/api/samples'); const sel = $('bt-source'); const cur = sel.value; sel.innerHTML = '';
-      samples.forEach((s) => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
+      const r = await api('/api/samples'); sampleDetails = r.details || [];
+      const sel = $('bt-source'); const cur = sel.value; sel.innerHTML = '';
+      (r.samples || []).forEach((s) => {
+        const d = sampleDetails.find((x) => x.path === s) || {};
+        const o = document.createElement('option'); o.value = s;
+        o.textContent = `${d.name || s}${d.from ? `  (${d.from} → ${d.to})` : ''}`;
+        sel.appendChild(o);
+      });
       const dl = document.createElement('option'); dl.value = ''; dl.textContent = 'Download from the configured exchange (needs internet + dates)'; sel.appendChild(dl);
       if (cur) sel.value = cur;
+      applySampleRange();
     } catch (e) { showAlert(e.message); }
     const bt = await api('/api/backtest').catch(() => null); if (bt) renderBacktest(bt);
   }
@@ -879,6 +917,39 @@
   }
   function disconnectStream() { if (chart.ws) { const ws = chart.ws; chart.ws = null; try { ws.close(); } catch (e) { /* ignore */ } } chart.wsKey = null; setLiveBadge('off'); }
 
+
+  // ----- why no trades -----
+  async function loadWhy() {
+    try {
+      const w = await api('/api/why');
+      const total = w.candles_evaluated || 0;
+      $('why-count').textContent = total ? `${total} candle${total === 1 ? '' : 's'} evaluated` : '';
+      const parts = [];
+      (w.blockers || []).forEach((b) => parts.push(`<div class="why-block">■ ${b}</div>`));
+      if (w.waiting && !(w.blockers || []).length) parts.push(`<div class="why-wait">${w.waiting}</div>`);
+      const entries = Object.entries(w.decisions || {}).sort((a, b) => b[1] - a[1]);
+      if (entries.length) {
+        const label = {
+          'no entry signal': 'No entry signal (no crossover)', 'order placed': 'Orders placed',
+          'warming up': 'Warming up (not enough history)', 'no_position': 'Sell signal but nothing to sell',
+          'already_long': 'Already in a position', 'low_confidence': 'Signal confidence too low',
+          'min_interval': 'Too soon after the last entry', 'cooldown': 'In cooldown after losses',
+          'halted': 'Halted by the daily loss limit', 'too_small': 'Order would be below the minimum size',
+          'kill_switch': 'Blocked by the kill switch', 'bad_stop': 'Signal had no usable stop loss',
+          'AI not called': 'AI not asked (no technical setup)',
+        };
+        parts.push('<ul class="why-list">' + entries.map(([k, v]) =>
+          `<li><span>${label[k] || k}</span><b>${v}</b></li>`).join('') + '</ul>');
+      }
+      if (w.ema_gap_pct != null) {
+        parts.push(`<div class="muted small" style="margin-top:8px">EMA gap ${w.ema_gap_pct > 0 ? '+' : ''}${w.ema_gap_pct}% · RSI ${w.indicators && w.indicators.rsi != null ? w.indicators.rsi.toFixed(1) : '—'} · ${w.timeframe} candles · ${w.mode} mode</div>`);
+      }
+      if (total && !((w.decisions || {})['order placed'])) {
+        parts.push('<ul class="why-hints">' + (w.hints || []).map((h) => `<li>${h}</li>`).join('') + '</ul>');
+      }
+      $('why-body').innerHTML = parts.join('') || 'Start the bot to see what it is waiting for.';
+    } catch (e) { /* the card is informational */ }
+  }
 
   // ----- license -----
   function renderLicense(l) {

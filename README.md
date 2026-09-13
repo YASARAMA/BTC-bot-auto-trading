@@ -55,6 +55,8 @@ when a version tag such as `v0.2.0` is pushed. Unzip and double-click `BTCBot.ex
 - A splash screen while Windows unpacks the executable, an animated boot screen while the
   dashboard connects, and a "what's new" panel after every update (`CHANGELOG.md`).
 - Pressing **Update** downloads, verifies, installs and restarts the app in one step.
+- A "Why no trades yet?" panel that breaks down every decision the bot made and says what
+  it is waiting for.
 - `BTCBot-console.exe` is the same app with a console window, useful when something fails
   before the UI appears. Logs also go to `data/bot.log`.
 

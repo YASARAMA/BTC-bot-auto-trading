@@ -100,6 +100,10 @@
             <tr><td>Kill switch</td><td id="r-kill">—</td></tr>
           </tbody></table>
         </div>
+        <div class="card" id="why-card">
+          <div class="card-title">Why no trades yet? <span class="muted small" id="why-count"></span></div>
+          <div id="why-body" class="muted small">Start the bot to see what it is waiting for.</div>
+        </div>
         <div class="card">
           <div class="card-title">Recent events</div>
           <ul class="events" id="alerts"><li class="muted">Nothing yet.</li></ul>
@@ -281,12 +285,13 @@
       <div class="card">
         <div class="card-title">Run a backtest</div>
         <form id="bt-form" class="form">
-          <label>Data <select id="bt-source"></select></label>
+          <label>Data <select id="bt-source"></select><span class="muted small" id="bt-range"></span></label>
           <div class="row">
             <label>From <input type="date" id="bt-from"></label>
             <label>To <input type="date" id="bt-to"></label>
             <label>Starting cash <input type="number" id="bt-cash" min="1" step="100" placeholder="from config"></label>
           </div>
+          <div class="row"><button type="button" class="ghost small-btn" id="bt-whole">Use the whole file</button><span class="muted small" id="bt-hint"></span></div>
           <div class="muted small">Dates are optional for a CSV file and required for a download. Strategy and risk settings come from the Settings tab. The AI strategy is not backtested: it would call the model once per candle.</div>
           <div class="row"><button type="submit" class="primary" id="bt-run">Run backtest</button><span id="bt-status" class="muted"></span></div>
         </form>

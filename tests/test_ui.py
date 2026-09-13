@@ -377,3 +377,48 @@ def test_changelog_endpoint(ui):
     assert "- " in newest["body"]
     one = call(server, f"/api/changelog?version={newest['version']}")[1]
     assert len(one["entries"]) == 1 and one["entries"][0]["version"] == newest["version"]
+
+
+def test_backtest_date_error_names_the_files_range(ui):
+    root, c, server = ui
+    code, started = call(server, "/api/backtest", {"csv": "data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv",
+                                                   "from": "2025-07-10", "to": "2025-07-12"})
+    assert code == 200
+    done = wait_for(lambda: (lambda b: b if b["state"] in ("done", "error") else None)(call(server, "/api/backtest")[1]), timeout=60)
+    assert done["state"] == "error"
+    err = done["error"]
+    assert "2020-11-17" in err and "2021-05-16" in err and "2025-07-10" in err
+    assert "clear both date fields" in err
+
+
+def test_sample_details_report_the_covered_period(ui):
+    root, c, server = ui
+    code, data = call(server, "/api/samples")
+    assert code == 200 and data["details"]
+    by_name = {d["name"]: d for d in data["details"]}
+    binance = by_name["binance_BTCUSDT_1h_2020-11_2021-05.csv"]
+    assert binance["from"] == "2020-11-17" and binance["to"] == "2021-05-16" and binance["candles"] == 4309
+    assert set(data["samples"]) == {d["path"] for d in data["details"]}
+
+
+def test_why_no_trades_explains_the_hold(ui):
+    root, c, server = ui
+    code, why = call(server, "/api/why")
+    assert code == 200 and "The bot is stopped. Press Start." in why["blockers"]
+
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.02})
+    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 120)
+    why = call(server, "/api/why")[1]
+    assert why["candles_evaluated"] > 0
+    assert sum(why["decisions"].values()) == why["candles_evaluated"]
+    assert "no entry signal" in why["decisions"] or "warming up" in why["decisions"]
+    assert why["recent"] and why["recent"][0]["action"] in ("BUY", "SELL", "HOLD")
+    assert why["timeframe"] == "1h" and why["mode"] == "balanced"
+    assert why["hints"] and not why["blockers"]
+    if why["ema_gap_pct"] is not None:
+        assert "crosses above" in why["waiting"]
+
+    call(server, "/api/kill", {"active": True})
+    assert "kill switch" in " ".join(call(server, "/api/why")[1]["blockers"]).lower()
+    call(server, "/api/kill", {"active": False})
+    call(server, "/api/stop", {"wait": 10})

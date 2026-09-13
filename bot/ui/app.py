@@ -17,7 +17,7 @@ import yaml
 
 from bot.backtest.__main__ import format_report
 from bot.backtest.engine import run_backtest
-from bot.common import now_ms, parse_date_ms, timeframe_to_ms
+from bot.common import iso, now_ms, parse_date_ms, timeframe_to_ms
 from bot.config import (
     DOTENV_KEYS,
     BotConfig,
@@ -39,7 +39,7 @@ from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -114,6 +114,8 @@ class BotController:
         self._bt_lock = threading.Lock()
         self._bt_thread: threading.Thread | None = None
         self.backtest: dict[str, Any] = {"state": "idle"}
+        self.decisions: dict[str, int] = {}
+        self.last_signals: list[dict[str, Any]] = []
         self._chart_cache: dict[str, Any] = {}
         self._chart_lock = threading.Lock()
         self.market_factory: Any = None  # tests inject a fake market data source here
@@ -332,8 +334,62 @@ class BotController:
             self._thread.start()
         return self.status()
 
+    def why_no_trades(self) -> dict[str, Any]:
+        """Plain-language answer to 'the bot is running but not trading'."""
+        rt, out = self.runtime, {"decisions": dict(self.decisions), "recent": self.last_signals[-8:][::-1]}
+        try:
+            cfg = self.load_cfg()
+        except Exception:  # noqa: BLE001
+            return out
+        last = self.last_cycle or {}
+        signal = last.get("signal") or {}
+        ind: dict[str, Any] = {}
+        reason = signal.get("reason") or ""
+        # "ema_fast=1 ema_slow=2 rsi=3 atr=4" appears in every technical reason string
+        for part in reason.replace(";", " ").split():
+            if "=" in part:
+                k, _, v = part.partition("=")
+                try:
+                    ind[k] = float(v)
+                except ValueError:
+                    continue
+        gap = None
+        if ind.get("ema_fast") and ind.get("ema_slow"):
+            gap = (ind["ema_fast"] / ind["ema_slow"] - 1) * 100
+        risk = last.get("risk") or {}
+        blockers: list[str] = []
+        if self.state != "running":
+            blockers.append("The bot is stopped. Press Start.")
+        if last.get("kill_switch") or (self.kill_switch_path().exists() if cfg else False):
+            blockers.append("The kill switch is on: no order will be placed.")
+        if risk.get("halted"):
+            blockers.append(f"Trading is halted for today: {risk.get('halt_reason')}")
+        if risk.get("cooldown"):
+            blockers.append(f"Cooldown after {risk.get('consecutive_losses')} losses in a row.")
+        if signal.get("reason", "").startswith("warming up"):
+            blockers.append(signal["reason"].capitalize() + ". It needs a full history before it decides.")
+        waiting = (f"The strategy enters only when the fast EMA crosses above the slow EMA. "
+                   f"They are {abs(gap):.2f}% apart ({'fast above' if gap and gap > 0 else 'fast below'} slow), "
+                   f"so no crossover has happened yet.") if gap is not None else None
+        tf = cfg.exchange.timeframe
+        out.update({
+            "state": self.state, "timeframe": tf, "strategy": cfg.strategy.name, "mode": cfg.mode,
+            "indicators": ind, "ema_gap_pct": round(gap, 3) if gap is not None else None,
+            "blockers": blockers, "waiting": waiting,
+            "min_gap_minutes": round(cfg.risk.min_seconds_between_trades / 60),
+            "candles_evaluated": sum(self.decisions.values()),
+            "hints": [
+                f"On {tf} candles an EMA crossover typically happens every few days. Fewer, longer candles mean fewer trades.",
+                "A shorter timeframe (5m or 15m in Settings) trades far more often, with more noise and more fees.",
+                "Aggressive mode enters on weaker signals and allows more trades per day.",
+                "Demo replays historical candles quickly, so you can watch the bot trade without waiting.",
+            ],
+        })
+        return out
+
     def _run(self, cfg: BotConfig, secrets: Any, mode: str, replay: Path | None, replay_delay: float) -> None:
         rt: Runtime | None = None
+        self.decisions, self.last_signals = {}, []
         try:
             log_event(log, "ui_start", mode=mode, replay=str(replay) if replay else None, config=cfg.printable())
             rt = build_runtime(self.runtime_cfg(cfg), secrets, mode, str(replay) if replay else None, None)
@@ -418,6 +474,19 @@ class BotController:
         if ev == "cycle":
             self.last_cycle = item
             self.cycles = int(item.get("cycle", self.cycles) or 0)
+            decision, signal = item.get("decision") or {}, item.get("signal") or {}
+            if signal:
+                code = "order placed" if decision.get("intent") else str(decision.get("rejected") or "hold")
+                if code == "hold" and signal.get("action") == "HOLD":
+                    reason = str(signal.get("reason") or "")
+                    code = ("warming up" if reason.startswith("warming up")
+                            else "AI not called" if reason.startswith("AI not called")
+                            else "no entry signal")
+                self.decisions[code] = self.decisions.get(code, 0) + 1
+                self.last_signals = (self.last_signals + [{
+                    "ts": item.get("candle_time") or item.get("now"), "action": signal.get("action"),
+                    "reason": signal.get("reason"), "code": code,
+                }])[-20:]
         elif ev in ("trade_closed", "position_opened", "risk_event", "cycle_error", "protective_exit_blocked",
                     "replay_finished", "startup_refused", "shutdown", "reconcile", "manual_order",
                     "mode_changed", "levels_changed"):
@@ -542,11 +611,29 @@ class BotController:
             conn.close()
 
     def samples(self) -> list[str]:
-        out: list[str] = []
+        return [s["path"] for s in self.sample_details()]
+
+    def sample_details(self) -> list[dict[str, Any]]:
+        """Every CSV the app can backtest, with the period it actually covers."""
+        out: list[dict[str, Any]] = []
         for folder in ("data/samples", "data/history"):
             d = self.root / folder
-            if d.is_dir():
-                out.extend(str(Path(folder) / f.name) for f in sorted(d.glob("*.csv")))
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.csv")):
+                rel = Path(folder) / f.name
+                item: dict[str, Any] = {"path": rel.as_posix(), "name": f.name}
+                key = (str(f), f.stat().st_mtime)
+                cached = self._chart_cache.get(("sample", key))
+                if cached is None:
+                    try:
+                        df = load_csv(f)
+                        cached = {"from": iso(int(df["ts"].iloc[0]))[:10], "to": iso(int(df["ts"].iloc[-1]))[:10],
+                                  "candles": int(len(df)), "from_ms": int(df["ts"].iloc[0]), "to_ms": int(df["ts"].iloc[-1])}
+                    except Exception as exc:  # noqa: BLE001 - a broken file must not hide the others
+                        cached = {"error": f"{type(exc).__name__}: {exc}"}
+                    self._chart_cache[("sample", key)] = cached
+                out.append({**item, **cached})
         return out
 
     # ----- chart ---------------------------------------------------------------------------
@@ -642,18 +729,30 @@ class BotController:
                 df = download_ohlcv(market, symbol=cfg.exchange.symbol, timeframe=cfg.exchange.timeframe,
                                     since_ms=since, until_ms=until, cache=cache)
                 source = f"{cfg.exchange.id} download"
+            have_from, have_to = (iso(int(df["ts"].iloc[0])), iso(int(df["ts"].iloc[-1]))) if len(df) else (None, None)
             if since is not None:
                 df = df[df["ts"] >= since]
             if until is not None:
                 df = df[df["ts"] <= until]
             df = df.reset_index(drop=True)
             if df.empty:
-                raise ValueError("no candles in the requested range")
+                asked = f"{params.get('from') or 'the start'} to {params.get('to') or 'the end'}"
+                raise ValueError(
+                    f"{source} has no candles between {asked}. This file covers "
+                    f"{(have_from or '?')[:10]} to {(have_to or '?')[:10]} — pick dates inside that period, "
+                    f"or clear both date fields to use the whole file.")
             strategy_params = dict(cfg.strategy.params)
             strategy_params.update(params.get("params") or {})
             cash = float(params["cash"]) if params.get("cash") else None
-            result = run_backtest(df, self.runtime_cfg(cfg), strategy_name=params.get("strategy") or None,
-                                  params=strategy_params, initial_cash=cash)
+            try:
+                result = run_backtest(df, self.runtime_cfg(cfg), strategy_name=params.get("strategy") or None,
+                                      params=strategy_params, initial_cash=cash)
+            except ValueError as exc:
+                if "need at least" in str(exc):
+                    raise ValueError(
+                        f"{exc}. The selected period only has {len(df)} candles: choose a longer range, "
+                        f"or a shorter timeframe in Settings.") from exc
+                raise
             curve = [{"ts": int(r.ts), "equity": float(r.equity), "position_qty": float(r.position_qty)}
                      for r in result.equity.itertuples()]
             with self._bt_lock:

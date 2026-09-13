@@ -2,6 +2,15 @@
 
 Every entry is one released build. The app shows the newest entry after it updates itself.
 
+## 0.6.1
+
+- **Backtest dates.** Each data file now shows the period it covers, the date pickers are
+  limited to that period, and a range with no candles explains which dates the file
+  actually has instead of failing with "no candles in the requested range".
+- **"Why no trades yet?"** A panel on the dashboard that answers the question directly: how
+  many candles were evaluated, how often each reason blocked a trade, how far the EMAs are
+  from crossing, and what to change to trade more often.
+
 ## 0.6.0
 
 - **App icon and splash screen.** The executable carries a proper Bitcoin icon, and a

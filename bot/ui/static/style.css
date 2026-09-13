@@ -337,3 +337,13 @@ dialog.wide { max-width: 620px; width: min(620px, 92vw); }
 footer a { color: var(--text-2); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
 footer a:hover { color: var(--text); }
 #lic-badge.ok { color: var(--up); border-color: color-mix(in srgb, var(--up) 45%, var(--border)); }
+
+.why-list { list-style: none; padding: 0; margin: 8px 0 0; }
+.why-list li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.why-list li:last-child { border-bottom: 0; }
+.why-list b { font-variant-numeric: tabular-nums; color: var(--text); }
+.why-block { color: var(--warn); margin: 6px 0; }
+.why-wait { color: var(--text-2); line-height: 1.55; }
+.why-hints { margin: 10px 0 0; padding-left: 18px; color: var(--text-3); font-size: 12px; }
+.why-hints li { margin-bottom: 5px; }
+input:invalid { border-color: var(--down); }
