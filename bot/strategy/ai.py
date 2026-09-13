@@ -103,6 +103,12 @@ class AiStrategy(Strategy):
     def warmup(self) -> int:
         return self.technical.warmup
 
+    def precompute(self, df: pd.DataFrame) -> None:
+        self.technical.precompute(df)
+
+    def clear_precomputed(self) -> None:
+        self.technical.clear_precomputed()
+
     # ----- client ---------------------------------------------------------------------
     @property
     def api_key(self) -> str | None:

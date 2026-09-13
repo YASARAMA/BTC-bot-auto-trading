@@ -98,7 +98,7 @@ def test_take_profit_and_tick_exit(cfg):
     clock["now"] = ts[5] + 600_000
     exchange.set_price(104.5)
     out = engine.process_tick(104.5)
-    assert out and out["intent"]["kind"] == "take_profit"
+    assert out and out["protective"]["intent"]["kind"] == "take_profit"
     assert engine.position is None
     t = engine.store.trades()[0]
     assert t.exit_reason == "take_profit" and t.exit_price == pytest.approx(104.5) and t.pnl > 0
@@ -212,3 +212,102 @@ def test_manual_position_is_managed_by_the_bot(cfg):
     engine.process_candle(df, fill_price=94.0, exit_at_level=True)
     assert engine.position is None
     assert engine.store.trades()[0].exit_reason == "stop_loss"
+
+
+def exits_cfg(cfg, **kw):
+    return cfg.model_copy(update={"exits": cfg.exits.model_copy(update=kw)})
+
+
+def open_position(cfg, closes, *, stop_pct=0.05, tp_pct=0.5):
+    """Helper: a scripted BUY on candle 4, then the caller drives the rest."""
+    df = make_ohlcv(closes, spread=0.0)
+    ts = df["ts"].tolist()
+    strategy = ScriptedStrategy({ts[4]: buy_signal(closes[4], stop_pct=stop_pct, tp_pct=tp_pct)})
+    clock = {"now": ts[0]}
+    engine, exchange = build(cfg, StateStore(":memory:"), strategy, lambda: clock["now"])
+    for i in range(5):
+        clock["now"] = ts[i] + TF_MS
+        exchange.set_price(float(df["close"].iloc[i]))
+        engine.process_candle(df.iloc[: i + 1], fill_price=float(df["close"].iloc[i]), exit_at_level=True)
+    assert engine.position is not None
+    return engine, exchange, df, ts, clock
+
+
+def test_trailing_stop_follows_the_high_and_never_drops(cfg):
+    # atr_stop_mult is 2.0 by default, so a 5% stop implies an ATR of 2.5% of price.
+    engine, exchange, df, ts, clock = open_position(exits_cfg(cfg, trailing_atr_mult=1.0), [100.0] * 8)
+    pos = engine.position
+    assert pos.atr_at_entry == pytest.approx(2.5)
+    assert pos.stop_loss == pytest.approx(95.0)
+
+    clock["now"] = ts[5] + TF_MS
+    engine.manage_position(high=110.0, low=99.0, candle_ts=ts[5], now=clock["now"], market_price=109.0)
+    assert engine.position.stop_loss == pytest.approx(107.5)  # 110 - 1 ATR
+    assert engine.position.highest_price == 110.0
+
+    # a lower high must not lower the stop
+    engine.manage_position(high=108.0, low=108.0, candle_ts=ts[6], now=clock["now"], market_price=108.0)
+    assert engine.position.stop_loss == pytest.approx(107.5)
+
+    # and the trailing stop closes the trade when price comes back to it
+    engine.manage_position(high=108.0, low=107.0, candle_ts=ts[7], now=clock["now"], market_price=107.0)
+    assert engine.position is None
+    trade = engine.store.trades()[-1]
+    assert trade.exit_reason == "stop_loss" and trade.pnl > 0, "the trailing stop banked a profit"
+
+
+def test_breakeven_moves_the_stop_to_entry_plus_fees(cfg):
+    engine, exchange, df, ts, clock = open_position(exits_cfg(cfg, breakeven_after_atr=1.0), [100.0] * 8)
+    entry = engine.position.entry_price
+    clock["now"] = ts[5] + TF_MS
+    engine.manage_position(high=entry + 2.0, low=entry, candle_ts=ts[5], now=clock["now"], market_price=entry + 2.0)
+    assert engine.position.stop_loss == pytest.approx(95.0), "not yet 1 ATR in profit"
+    engine.manage_position(high=entry + 3.0, low=entry, candle_ts=ts[6], now=clock["now"], market_price=entry + 3.0)
+    assert engine.position.stop_loss > entry, "the stop covers the entry and both fees"
+    assert engine.position.stop_loss == pytest.approx(entry * (1 + cfg.exchange.fee_rate * 2))
+
+
+def test_partial_take_profit_sells_a_fraction_once(cfg):
+    engine, exchange, df, ts, clock = open_position(
+        exits_cfg(cfg, partial_take_fraction=0.5, partial_take_atr=1.0), [100.0] * 8)
+    full = engine.position.qty
+    clock["now"] = ts[5] + TF_MS
+    out = engine.manage_position(high=103.0, low=100.0, candle_ts=ts[5], now=clock["now"], market_price=103.0)
+    assert out and "partial" in out
+    assert engine.position.qty == pytest.approx(full / 2, rel=1e-3)
+    assert engine.position.partial_done is True
+    banked = engine.store.trades()[-1]
+    assert banked.qty == pytest.approx(full / 2, rel=1e-3) and banked.pnl > 0
+
+    # it does not fire again on the next candle
+    engine.manage_position(high=104.0, low=100.0, candle_ts=ts[6], now=clock["now"], market_price=104.0)
+    assert engine.position.qty == pytest.approx(full / 2, rel=1e-3)
+    assert len(engine.store.trades()) == 1
+
+
+def test_stop_is_checked_before_the_high_can_raise_it(cfg):
+    """A candle that hits both the stop and a new high must exit at the stop."""
+    engine, exchange, df, ts, clock = open_position(exits_cfg(cfg, trailing_atr_mult=0.5), [100.0] * 8)
+    clock["now"] = ts[5] + TF_MS
+    engine.manage_position(high=120.0, low=94.0, candle_ts=ts[5], now=clock["now"], open_price=100.0)
+    assert engine.position is None
+    assert engine.store.trades()[-1].exit_reason == "stop_loss"
+
+
+def test_trend_filter_blocks_buys_below_the_trend_line(cfg):
+    from bot.strategy.ema_rsi import EmaRsiStrategy
+
+    falling = [100.0 * (0.995 ** i) for i in range(500)] + [100.0 * (0.995 ** 499) * (1.02 ** i) for i in range(60)]
+    df = make_ohlcv(falling, spread=0.0)
+    loose = EmaRsiStrategy({"rsi_buy_min": 0, "rsi_buy_max": 100})
+    filtered = EmaRsiStrategy({"rsi_buy_min": 0, "rsi_buy_max": 100, "trend_filter_period": 200})
+    buys_loose = [i for i in range(filtered.warmup, len(df))
+                  if loose.on_candle(df.iloc[: i + 1]).action == Action.BUY]
+    assert buys_loose, "the unfiltered strategy buys somewhere in this series"
+    blocked = 0
+    for i in buys_loose:
+        sig = filtered.on_candle(df.iloc[: i + 1])
+        if sig.action != Action.BUY:
+            blocked += 1
+            assert "trend line" in sig.reason or "not ready" in sig.reason
+    assert blocked, "the trend filter blocks at least one buy while price is under the trend line"

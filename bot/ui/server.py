@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import secrets
 import threading
 from http import HTTPStatus
@@ -23,6 +24,17 @@ log = logging.getLogger("bot.ui.server")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
+
+
+def _finite(value: Any) -> Any:
+    """Replace NaN and Infinity with None, recursively, so the payload is valid JSON."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(v) for v in value]
+    return value
 
 
 class ApiError(Exception):
@@ -113,6 +125,28 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
             return c.deactivate_license()
         raise ApiError(400, f"unknown license action {action!r}")
 
+    def start_research(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.start_research(body)
+        except RuntimeError as exc:
+            raise ApiError(409, str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+
+    def apply_research(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.apply_research(body.get("params") or {})
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+
+    def start_download(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        try:
+            return c.start_download(body)
+        except RuntimeError as exc:
+            raise ApiError(409, str(exc)) from exc
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
+
     def quit_app(q: dict[str, Any], body: dict[str, Any]) -> Any:
         threading.Thread(target=c.quit, daemon=True).start()
         return {"ok": True}
@@ -128,6 +162,12 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
         ("POST", "/api/secrets"): lambda q, b: c.save_secrets(b),
         ("GET", "/api/samples"): lambda q, b: {"samples": c.samples(), "details": c.sample_details()},
         ("GET", "/api/why"): lambda q, b: c.why_no_trades(),
+        ("GET", "/api/analytics"): lambda q, b: c.analytics(),
+        ("GET", "/api/research"): lambda q, b: c.research_status(),
+        ("POST", "/api/research"): start_research,
+        ("POST", "/api/research/apply"): apply_research,
+        ("GET", "/api/download"): lambda q, b: c.download_status(),
+        ("POST", "/api/download"): start_download,
         ("GET", "/api/candles"): candles,
         ("POST", "/api/start"): start,
         ("POST", "/api/stop"): lambda q, b: c.stop(wait=float(b.get("wait", 0.0))),
@@ -148,6 +188,7 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
 
 def make_handler(controller: BotController, token: str) -> type[BaseHTTPRequestHandler]:
     routes = build_routes(controller)
+    # `controller` is captured by the handler for the streaming endpoints below.
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "BTCBotUI/1"
@@ -167,10 +208,18 @@ def make_handler(controller: BotController, token: str) -> type[BaseHTTPRequestH
             self.wfile.write(body)
 
         def _json(self, status: int, payload: Any) -> None:
-            self._send(status, json.dumps(payload, default=str).encode("utf-8"), "application/json; charset=utf-8")
+            # NaN and Infinity are valid Python floats but not valid JSON: a browser's
+            # response.json() throws on them and the page silently loses the answer.
+            body = json.dumps(_finite(payload), default=str, allow_nan=False).encode("utf-8")
+            self._send(status, body, "application/json; charset=utf-8")
 
-        def _authorized(self) -> bool:
-            return secrets.compare_digest(self.headers.get("X-Token", ""), token)
+        def _authorized(self, query: dict[str, str] | None = None) -> bool:
+            if secrets.compare_digest(self.headers.get("X-Token", ""), token):
+                return True
+            # A browser download link cannot set a header, so /api/export may carry the token
+            # in the query string instead. Everything else still requires the header.
+            supplied = (query or {}).get("token", "")
+            return bool(supplied) and secrets.compare_digest(supplied, token)
 
         def _static(self, path: str) -> None:
             name = "index.html" if path in ("", "/") else path.lstrip("/")
@@ -191,14 +240,29 @@ def make_handler(controller: BotController, token: str) -> type[BaseHTTPRequestH
                 else:
                     self._send(HTTPStatus.METHOD_NOT_ALLOWED, b"", "text/plain")
                 return
-            if not self._authorized():
+            query = {k: v[-1] for k, v in parse_qs(url.query).items()}
+            if not self._authorized(query if url.path == "/api/export" else None):
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing or invalid token"})
+                return
+            if method == "GET" and url.path == "/api/export":
+                what = query.get("what", "trades")
+                try:
+                    text, filename = controller.export_csv(what)
+                except ValueError as exc:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    return
+                body_bytes = text.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(body_bytes)))
+                self.end_headers()
+                self.wfile.write(body_bytes)
                 return
             handler = routes.get((method, url.path))
             if handler is None:
                 self._json(HTTPStatus.NOT_FOUND, {"error": f"no route {method} {url.path}"})
                 return
-            query = {k: v[-1] for k, v in parse_qs(url.query).items()}
             body: dict[str, Any] = {}
             if method == "POST":
                 length = int(self.headers.get("Content-Length") or 0)

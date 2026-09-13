@@ -151,6 +151,67 @@ Before trading, `TradingEngine.reconcile()`:
   position if the coins are not there (a warning is logged);
 - ignores, but reports, coins in the account that the bot did not buy.
 
+## Research: does the strategy actually work?
+
+A single backtest proves very little. Try enough parameter sets and one will look
+brilliant on the period you tried it on. Two tools guard against that, in the **Research**
+tab or from the command line:
+
+```bash
+python -m bot.backtest.optimize --csv data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv --mode grid
+python -m bot.backtest.optimize --csv data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv --mode walk-forward
+```
+
+**Grid search** backtests every combination in a search space and ranks them. Useful to
+see the whole surface, but every number it prints is in-sample.
+
+**Walk-forward** is the honest test: it cuts the history into blocks, optimises on each
+block and then trades those settings on the *next* block, which the search never saw. The
+equity curve it reports is stitched from out-of-sample results only, and it ends with a
+verdict in plain words, including "do not trade it with real money" when the result does
+not hold up.
+
+On the shipped sample data the reference strategy fails that test: it is roughly flat out
+of sample while buying and holding made far more. That is the answer the tool exists to
+give you.
+
+Backtests run about nine times faster than before because indicators are computed once per
+run rather than once per candle; the values are identical (there is a test for that).
+
+## Exits: what closes a trade
+
+Entries get most of the attention, but exits usually decide the result. Under `exits` in
+`config.yaml`, all measured in multiples of the ATR at entry, zero meaning off:
+
+| Setting | What it does |
+| --- | --- |
+| `trailing_atr_mult` | Follows the highest price since entry, never moving down |
+| `breakeven_after_atr` | Moves the stop to entry plus fees once the trade is this far ahead |
+| `partial_take_fraction` | Sells this share of the position early, letting the rest run |
+| `partial_take_atr` | The profit at which that partial sale happens |
+
+Within a single candle the stop is always checked before a new high can raise it, because
+the order of the high and the low inside a candle is unknowable.
+
+The strategy also takes `trend_filter_period`: with it set, a buy only happens when price
+is above that moving average.
+
+## Phone control and alerts
+
+With a Telegram bot token and chat id in `.env`, the bot answers commands from that chat
+and only that chat: `/status`, `/pnl`, `/position`, `/why`, `/stop`, `/start`, `/kill`,
+`/unkill`, `/help`.
+
+A watchdog alerts you when the bot stops producing cycles while it is supposed to be
+trading, because a bot that dies quietly leaves a position with nothing watching it. Set
+`notify.daily_report_hour_utc` for a daily summary of equity, trades and realised profit.
+
+## Analytics and exports
+
+The **Analytics** tab shows realised profit by month, expectancy per trade, results split
+by exit type, win and loss streaks and holding times, all computed from the trades the bot
+actually made, fees included. Both the trade list and the equity curve export to CSV.
+
 ## License keys
 
 Live trading needs a key (`BTCB-XXXXX-XXXXX-XXXXX-XXXXX`), entered once under Settings.

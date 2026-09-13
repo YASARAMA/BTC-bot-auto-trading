@@ -34,6 +34,17 @@ class Strategy(ABC):
     def describe(self) -> dict[str, Any]:
         return {"name": self.name, "params": self.raw_params, "warmup": self.warmup}
 
+    def precompute(self, df: pd.DataFrame) -> None:
+        """Optional: compute indicators once over a whole historical series.
+
+        The backtester calls this before replaying the candles; the live bot never does.
+        Indicators here converge long before the warmup ends, so the values are the same
+        either way (tests/test_strategy.py checks that they agree to 1e-6).
+        """
+
+    def clear_precomputed(self) -> None:
+        """Forget anything precompute() cached."""
+
 
 def validate_frame(df: pd.DataFrame) -> None:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]

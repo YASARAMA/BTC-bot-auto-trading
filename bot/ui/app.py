@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +35,15 @@ from bot.licensing import LicenseManager
 from bot.logging_utils import EventBufferHandler, log_event
 from bot.models import Side
 from bot.modes import DEFAULT_MODE, MODES, apply_mode, detect_mode, mode_list
+from bot.notify.notifier import Notifier as _Notifier  # noqa: F401  (used by _notify)
+from bot.notify.telegram_control import TelegramControl, Watchdog
+from bot.reports import analytics as trade_analytics, daily_summary, equity_csv, trades_csv
 from bot.main import Runtime, build_runtime, run_loop
 from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -111,6 +115,15 @@ class BotController:
         self.started_at: int | None = None
         self.replay_path: str | None = None
         self.recent_alerts: list[dict[str, Any]] = []
+        self._research_lock = threading.Lock()
+        self._research_thread: threading.Thread | None = None
+        self.research: dict[str, Any] = {"state": "idle"}
+        self._download_lock = threading.Lock()
+        self.download: dict[str, Any] = {"state": "idle"}
+        self.telegram: TelegramControl | None = None
+        self.watchdog: Watchdog | None = None
+        self._last_report_day: str | None = None
+        self._report_thread: threading.Thread | None = None
         self._bt_lock = threading.Lock()
         self._bt_thread: threading.Thread | None = None
         self.backtest: dict[str, Any] = {"state": "idle"}
@@ -564,6 +577,14 @@ class BotController:
             "decision": last.get("decision"),
             "alerts": self.recent_alerts[-10:],
             "backtest_state": self.backtest.get("state"),
+            "research_state": self.research.get("state"),
+            "download_state": self.download.get("state"),
+            "services": {
+                "telegram_commands": bool(self.telegram),
+                "telegram_error": self.telegram.last_error if self.telegram else None,
+                "watchdog": bool(self.watchdog),
+                "watchdog_alerts": self.watchdog.alerts if self.watchdog else 0,
+            },
             "license": self.license_status(),
             "trading_mode": (cfg_summary or {}).get("mode"),
             "trading_modes": mode_list(),
@@ -697,6 +718,280 @@ class BotController:
             "trades": trades, "position": position, "last_price": last_price, "now": now_ms(),
         }
 
+    # ----- research: parameter search and walk-forward ---------------------------------------
+    def start_research(self, params: dict[str, Any]) -> dict[str, Any]:
+        with self._research_lock:
+            if self.research.get("state") == "running":
+                raise RuntimeError("a search is already running")
+            self.research = {"state": "running", "params": params, "started_at": now_ms(),
+                             "progress": {"done": 0, "total": 0, "phase": "starting"}}
+            self._research_thread = threading.Thread(target=self._run_research, args=(params,), daemon=True,
+                                                    name="research")
+            self._research_thread.start()
+        return dict(self.research)
+
+    def _run_research(self, params: dict[str, Any]) -> None:
+        from bot.backtest.optimize import DEFAULT_GRID, expand_grid, grid_search, walk_forward
+
+        try:
+            cfg = self.load_cfg()
+            csv_path = params.get("csv")
+            if not csv_path:
+                raise ValueError("choose a data file to search over")
+            path = Path(csv_path)
+            df = load_csv(path if path.is_absolute() else self.root / path)
+            since = parse_date_ms(params["from"]) if params.get("from") else None
+            until = parse_date_ms(params["to"]) + 86_400_000 - 1 if params.get("to") else None
+            if since is not None:
+                df = df[df["ts"] >= since]
+            if until is not None:
+                df = df[df["ts"] <= until]
+            df = df.reset_index(drop=True)
+            if df.empty:
+                raise ValueError("no candles in the requested range")
+            sample = int(params.get("sample") or 60) or None
+            objective = str(params.get("objective") or "return_over_drawdown")
+            mode = str(params.get("mode") or "walk-forward")
+            workers = int(params.get("workers") or min(4, os.cpu_count() or 2))
+
+            def note(**kw: Any) -> None:
+                with self._research_lock:
+                    self.research["progress"] = {**self.research.get("progress", {}), **kw}
+
+            if mode == "grid":
+                def tick(done: int, total: int) -> None:
+                    note(done=done, total=total, phase="testing parameter sets")
+
+                ranked = grid_search(df, self.runtime_cfg(cfg), objective=objective, sample=sample,
+                                     min_trades=int(params.get("min_trades") or 10), workers=workers,
+                                     progress=tick)
+                out = {"mode": "grid", "top": [c.to_dict() for c in ranked[:25]],
+                       "tested": len(ranked), "objective": objective,
+                       "note": "These are in-sample numbers: the search saw this whole period. "
+                               "Run a walk-forward test before trusting them."}
+            else:
+                def wf_tick(phase: str, fold: int, total: int) -> None:
+                    note(done=fold, total=total, phase=f"block {fold} of {total}: {phase}")
+
+                out = walk_forward(df, self.runtime_cfg(cfg), folds=int(params.get("folds") or 4),
+                                   train_ratio=float(params.get("train_ratio") or 0.7), objective=objective,
+                                   sample=sample, min_trades=max(1, int(params.get("min_trades") or 10) // 2),
+                                   workers=workers, progress=wf_tick)
+                out["mode"] = "walk-forward"
+            with self._research_lock:
+                self.research = {"state": "done", "params": params, "finished_at": now_ms(),
+                                 "candles": int(len(df)), "source": Path(csv_path).name, **out}
+        except Exception as exc:  # noqa: BLE001
+            log.exception("research failed")
+            with self._research_lock:
+                self.research = {"state": "error", "params": params, "error": f"{type(exc).__name__}: {exc}"}
+
+    def research_status(self) -> dict[str, Any]:
+        with self._research_lock:
+            return dict(self.research)
+
+    def apply_research(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Write a parameter set found by the search into config.yaml."""
+        if not params:
+            raise ValueError("no parameters to apply")
+        data = self.load_cfg().printable()
+        data["strategy"]["params"] = {**data["strategy"].get("params", {}), **params}
+        cfg = self.save_config(data)
+        log_event(log, "params_applied", level=logging.WARNING, detail=f"Strategy parameters updated: {params}")
+        return {"config": cfg.printable(), "applied": params}
+
+    # ----- history download -------------------------------------------------------------------
+    def start_download(self, params: dict[str, Any]) -> dict[str, Any]:
+        with self._download_lock:
+            if self.download.get("state") == "running":
+                raise RuntimeError("a download is already running")
+            self.download = {"state": "running", "params": params, "started_at": now_ms(), "candles": 0}
+        threading.Thread(target=self._run_download, args=(params,), daemon=True, name="download").start()
+        return dict(self.download)
+
+    def _run_download(self, params: dict[str, Any]) -> None:
+        try:
+            cfg = self.load_cfg()
+            symbol = str(params.get("symbol") or cfg.exchange.symbol)
+            timeframe = str(params.get("timeframe") or cfg.exchange.timeframe)
+            timeframe_to_ms(timeframe)
+            since = parse_date_ms(params["from"]) if params.get("from") else now_ms() - 365 * 86_400_000
+            until = parse_date_ms(params["to"]) + 86_400_000 - 1 if params.get("to") else now_ms()
+            if self.market_factory is not None:
+                market = self.market_factory(cfg)
+            else:
+                from bot.execution.live import LiveExchange
+
+                market = LiveExchange(cfg.exchange, None)
+            cache = cache_path(self.root / "data" / "history", cfg.exchange.id, symbol, timeframe)
+            df = download_ohlcv(market, symbol=symbol, timeframe=timeframe, since_ms=since, until_ms=until,
+                                cache=cache)
+            with self._download_lock:
+                self.download = {"state": "done", "params": params, "file": str(cache.relative_to(self.root)),
+                                 "candles": int(len(df)), "from": iso(int(df["ts"].iloc[0])),
+                                 "to": iso(int(df["ts"].iloc[-1])), "finished_at": now_ms()}
+            self._chart_cache.clear()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("history download failed")
+            with self._download_lock:
+                self.download = {"state": "error", "params": params, "error": f"{type(exc).__name__}: {exc}"}
+
+    def download_status(self) -> dict[str, Any]:
+        with self._download_lock:
+            return dict(self.download)
+
+    # ----- analytics and exports ----------------------------------------------------------------
+    def analytics(self) -> dict[str, Any]:
+        conn = self._read_conn()
+        trades = []
+        if conn is not None:
+            from bot.state.store import StateStore
+
+            store = StateStore(self.db_path())
+            trades = store.trades()
+            store.close()
+        return trade_analytics(trades, self.equity(limit=100000))
+
+    def export_csv(self, what: str) -> tuple[str, str]:
+        from bot.state.store import StateStore
+
+        store = StateStore(self.db_path())
+        try:
+            if what == "trades":
+                return trades_csv(store.trades()), "trades.csv"
+            if what == "equity":
+                return equity_csv(store.equity_curve()), "equity.csv"
+        finally:
+            store.close()
+        raise ValueError(f"unknown export {what!r}")
+
+    # ----- telegram control and the watchdog ------------------------------------------------------
+    def _telegram_handlers(self) -> dict[str, Any]:
+        def status() -> str:
+            s = self.status()
+            pos = s.get("position")
+            lines = [f"{s['state']} · {s.get('mode') or '—'} · {s['config'].get('symbol', '?')} "
+                     f"{s['config'].get('timeframe', '')} · {s.get('trading_mode')}"]
+            if s.get("equity") is not None:
+                lines.append(f"Equity {s['equity']:,.2f} · cash {s.get('cash', 0):,.2f} · price {s.get('price') or 0:,.2f}")
+            lines.append(f"Position: {pos['qty']:.6f} @ {pos['entry_price']:,.2f} (stop {pos['stop_loss']}, "
+                         f"target {pos['take_profit']})" if pos else "Position: flat")
+            risk = s.get("risk") or {}
+            lines.append(f"Risk: halted={risk.get('halted')} cooldown={risk.get('cooldown')} "
+                         f"kill_switch={s.get('kill_switch')} today={risk.get('daily_drawdown_pct')}%")
+            return "\n".join(lines)
+
+        def pnl() -> str:
+            a = self.analytics()
+            if not a["trades"]:
+                return "No closed trades yet."
+            return (f"{a['trades']} trades · realised {a['pnl']:+,.2f} · fees {a['fees']:,.2f}\n"
+                    f"Win rate {a['win_rate_pct']}% · expectancy {a['expectancy']:+,.2f} per trade\n"
+                    f"Best {a['best']:+,.2f} · worst {a['worst']:+,.2f}")
+
+        def position() -> str:
+            s = self.status()
+            p = s.get("position")
+            if not p:
+                return "No open position."
+            price = s.get("price") or p["entry_price"]
+            return (f"{p['qty']:.6f} @ {p['entry_price']:,.2f}\nNow {price:,.2f} "
+                    f"({(price / p['entry_price'] - 1) * 100:+.2f}%)\n"
+                    f"Stop {p['stop_loss']} · target {p['take_profit']}\n"
+                    f"Unrealised {(price - p['entry_price']) * p['qty']:+,.2f}")
+
+        def why() -> str:
+            w = self.why_no_trades()
+            parts = w.get("blockers") or []
+            if w.get("waiting"):
+                parts.append(w["waiting"])
+            counts = ", ".join(f"{k}: {v}" for k, v in sorted(w.get("decisions", {}).items(), key=lambda x: -x[1])[:4])
+            return "\n".join(parts + [f"Decisions so far: {counts}" if counts else ""]).strip() or "Nothing to report."
+
+        def stop_bot() -> str:
+            self.stop(wait=10)
+            return "Stopped. The app is still running; send /start to trade again."
+
+        def start_bot() -> str:
+            if self.state == "running":
+                return "Already running."
+            self.start()
+            return f"Started in {self.mode or 'paper'} mode."
+
+        def kill_on() -> str:
+            self.kill_switch(True)
+            return "Kill switch ON. No order will be placed, by the bot or by hand."
+
+        def kill_off() -> str:
+            self.kill_switch(False)
+            return "Kill switch off. Trading can resume."
+
+        return {"status": status, "pnl": pnl, "position": position, "why": why, "stop": stop_bot,
+                "start": start_bot, "kill": kill_on, "unkill": kill_off}
+
+    def start_services(self) -> None:
+        """Telegram commands, the watchdog and the daily report."""
+        try:
+            cfg = self.load_cfg()
+        except Exception:  # noqa: BLE001
+            return
+        secrets = load_secrets()
+        if (cfg.notify.telegram_commands and secrets.telegram_bot_token and secrets.telegram_chat_id
+                and self.telegram is None):
+            self.telegram = TelegramControl(secrets.telegram_bot_token, secrets.telegram_chat_id,
+                                            self._telegram_handlers())
+            self.telegram.start()
+        if cfg.notify.watchdog_minutes > 0 and self.watchdog is None:
+            self.watchdog = Watchdog(
+                is_running=lambda: self.state == "running",
+                last_cycle_ms=lambda: self._last_cycle_ms(),
+                notify=lambda text: self._notify(f"WATCHDOG {text}"),
+                stall_seconds=cfg.notify.watchdog_minutes * 60.0,
+            )
+            self.watchdog.start()
+        if self._report_thread is None:
+            self._report_thread = threading.Thread(target=self._report_loop, daemon=True, name="daily-report")
+            self._report_thread.start()
+
+    def _last_cycle_ms(self) -> int | None:
+        ts = (self.last_cycle or {}).get("ts")
+        if not ts:
+            return None
+        try:
+            from datetime import datetime
+
+            return int(datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp() * 1000)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _notify(self, text: str) -> None:
+        try:
+            Notifier(self.load_cfg().notify, load_secrets(), prefix="[BTC Bot] ").send(text)
+        except Exception:  # noqa: BLE001
+            log.warning("notification failed", exc_info=True)
+
+    def _report_loop(self) -> None:
+        while not self.quit_event.wait(300):
+            try:
+                cfg = self.load_cfg()
+                hour = cfg.notify.daily_report_hour_utc
+                if hour < 0:
+                    continue
+                now = datetime.now(tz=timezone.utc)
+                day = now.strftime("%Y-%m-%d")
+                if now.hour == hour and self._last_report_day != day:
+                    self._last_report_day = day
+                    from bot.state.store import StateStore
+
+                    store = StateStore(self.db_path())
+                    text = daily_summary(store.trades(), store.equity_curve(), day=day,
+                                         symbol=cfg.exchange.symbol, mode=cfg.mode)
+                    store.close()
+                    self._notify(text)
+                    log_event(log, "daily_report", detail="daily report sent")
+            except Exception:  # noqa: BLE001
+                log.exception("daily report failed")
+
     # ----- backtests ----------------------------------------------------------------------
     def start_backtest(self, params: dict[str, Any]) -> dict[str, Any]:
         with self._bt_lock:
@@ -776,5 +1071,9 @@ class BotController:
     # ----- shutdown -----------------------------------------------------------------------
     def quit(self, wait: float = 15.0) -> None:
         self.stop(wait=wait)
+        if self.telegram:
+            self.telegram.stop()
+        if self.watchdog:
+            self.watchdog.stop()
         self.updater.stop()
         self.quit_event.set()

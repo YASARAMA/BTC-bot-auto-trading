@@ -55,6 +55,12 @@ class Position:
     entry_order_id: str
     strategy: str
     fees_paid: float = 0.0
+    # exit management
+    atr_at_entry: float = 0.0
+    highest_price: float = 0.0
+    initial_stop: float | None = None
+    initial_qty: float = 0.0
+    partial_done: bool = False
 
     def notional(self, price: float) -> float:
         return self.qty * price
@@ -67,7 +73,9 @@ class Position:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Position":
-        return cls(**d)
+        # Ignore unknown keys so a state file written by an older version still loads.
+        known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        return cls(**known)
 
 
 @dataclass(frozen=True)

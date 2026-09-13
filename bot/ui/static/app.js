@@ -90,6 +90,8 @@
     if (b.dataset.tab === 'modes') renderModes();
     if (b.dataset.tab === 'trade') renderTrade();
     if (b.dataset.tab === 'ai') renderAi();
+    if (b.dataset.tab === 'research') loadResearch();
+    if (b.dataset.tab === 'analytics') loadAnalytics();
   }));
 
   // ----- equity chart -----
@@ -206,6 +208,11 @@
     if (s.secrets) $('env-path').textContent = s.secrets.env_file;
     renderUpdate(s.update);
     renderLicense(s.license);
+    const svc = s.services || {};
+    const tg = $('tg-state');
+    if (tg) tg.innerHTML = svc.telegram_commands
+      ? `<span class="pos">Phone control is active.</span>${svc.telegram_error ? ` <span class="neg">Last error: ${svc.telegram_error}</span>` : ''}`
+      : 'Phone control is off: add a token and chat id below, then restart the app.';
     if (document.querySelector('#tab-trade').classList.contains('active')) renderTrade();
     if (document.querySelector('#tab-ai').classList.contains('active')) renderAi();
     const tw = $('temp-warning');
@@ -512,8 +519,8 @@
   });
 
   // ----- settings -----
-  const SECTIONS = ['exchange', 'strategy', 'risk', 'paper', 'notify', 'update', 'logging', 'state'];
-  const SECTION_TITLES = { update: ['Updates', 'self-update from GitHub releases'], exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
+  const SECTIONS = ['exchange', 'strategy', 'risk', 'exits', 'paper', 'notify', 'update', 'logging', 'state'];
+  const SECTION_TITLES = { exits: ['Exit rules', 'how an open position is managed'], update: ['Updates', 'self-update from GitHub releases'], exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
   const FIELD_SPEC = {
     'exchange.id': { label: 'Exchange', type: 'suggest', meta: 'exchanges' }, 'exchange.symbol': { label: 'Market (BASE/QUOTE)' },
     'exchange.timeframe': { label: 'Timeframe the bot trades on', type: 'select', meta: 'timeframes' },
@@ -542,6 +549,14 @@
     'notify.on_fill': { label: 'Notify on fills' }, 'notify.on_halt': { label: 'Notify on halts and cooldowns' }, 'notify.on_error': { label: 'Notify on errors' }, 'notify.timeout_seconds': { label: 'Webhook timeout (s)' },
     'logging.level': { label: 'Log level', type: 'select', options: ['DEBUG', 'INFO', 'WARNING', 'ERROR'] }, 'logging.format': { label: 'Log format', type: 'select', options: ['json', 'text'] },
     'state.db_path': { label: 'Database file' },
+    'exits.trailing_atr_mult': { label: 'Trailing stop (× ATR)', help: 'follows the highest price; 0 = off' },
+    'exits.breakeven_after_atr': { label: 'Move stop to breakeven after (× ATR)', help: '0 = off' },
+    'exits.partial_take_fraction': { label: 'Partial take profit: fraction to sell', help: '0 = off, 0.5 = half' },
+    'exits.partial_take_atr': { label: 'Partial take profit at (× ATR)' },
+    'strategy.params.trend_filter_period': { label: 'Trend filter EMA period', help: 'only buy above it; 0 = off' },
+    'notify.telegram_commands': { label: 'Obey Telegram commands from your chat' },
+    'notify.watchdog_minutes': { label: 'Alert if no cycle for (minutes)', help: '0 = off' },
+    'notify.daily_report_hour_utc': { label: 'Daily report hour (UTC)', help: '-1 = off' },
     'update.enabled': { label: 'Check GitHub for new builds' }, 'update.auto_install': { label: 'Install updates automatically while the bot is stopped' },
     'update.check_interval_minutes': { label: 'Check interval (minutes)' }, 'update.repo': { label: 'GitHub repository (owner/name)' },
   };
@@ -917,6 +932,161 @@
   }
   function disconnectStream() { if (chart.ws) { const ws = chart.ws; chart.ws = null; try { ws.close(); } catch (e) { /* ignore */ } } chart.wsKey = null; setLiveBadge('off'); }
 
+
+  // ----- research: parameter search and walk-forward -----
+  async function loadResearch() {
+    try {
+      const r = await api('/api/samples'); sampleDetails = r.details || [];
+      const sel = $('rs-source'); const cur = sel.value; sel.innerHTML = '';
+      (r.samples || []).forEach((s) => {
+        const d = sampleDetails.find((x) => x.path === s) || {};
+        const o = document.createElement('option'); o.value = s;
+        o.textContent = `${d.name || s}${d.from ? `  (${d.from} → ${d.to}, ${d.candles} candles)` : ''}`;
+        sel.appendChild(o);
+      });
+      if (cur) sel.value = cur;
+      const d = sampleDetails.find((x) => x.path === sel.value);
+      $('rs-range').textContent = d && d.candles ? `${d.candles.toLocaleString()} candles · ${d.from} → ${d.to}` : '';
+      const tf = $('dl-timeframe');
+      if (!tf.options.length) {
+        (cfgMeta.timeframes.length ? cfgMeta.timeframes : ['1m','5m','15m','1h','4h','1d']).forEach((t) => {
+          const o = document.createElement('option'); o.value = o.textContent = t; tf.appendChild(o);
+        });
+        tf.value = (status.config && status.config.timeframe) || '1h';
+      }
+      if (!$('dl-symbol').value) $('dl-symbol').value = (status.config && status.config.symbol) || 'BTC/USDT';
+      renderResearch(await api('/api/research'));
+    } catch (e) { showAlert(e.message); }
+  }
+  $('rs-source').addEventListener('change', () => {
+    const d = sampleDetails.find((x) => x.path === $('rs-source').value);
+    $('rs-range').textContent = d && d.candles ? `${d.candles.toLocaleString()} candles · ${d.from} → ${d.to}` : '';
+  });
+  let lastResearch = null;
+  function renderResearch(r) {
+    if (!r) return;
+    const st = $('rs-status'), meter = $('rs-meter');
+    if (r.state === 'running') {
+      const p = r.progress || {};
+      st.textContent = p.phase ? `${p.phase}${p.total ? ` (${p.done}/${p.total})` : ''}` : 'running…';
+      meter.classList.remove('hidden');
+      meter.firstElementChild.style.width = p.total ? `${Math.round(p.done / p.total * 100)}%` : '10%';
+      $('rs-run').disabled = true;
+      return;  // the shared refresher below keeps polling; a failed fetch must not end the chain
+    }
+    $('rs-run').disabled = false; meter.classList.add('hidden');
+    if (r.state === 'error') { st.textContent = ''; showAlert(`Search failed: ${r.error}`, 'error', 15000); return; }
+    if (r.state !== 'done') { st.textContent = ''; return; }
+    lastResearch = r;
+    st.textContent = `done · ${r.candles.toLocaleString()} candles from ${r.source}`;
+    $('rs-result').classList.remove('hidden');
+    const head = $('rs-table').querySelector('thead'), body = $('rs-table').querySelector('tbody');
+    if (r.mode === 'walk-forward') {
+      const m = r.out_of_sample, s = r.stability;
+      const v = $('rs-verdict');
+      v.textContent = r.verdict;
+      v.className = `confirm-box ${m.total_return_pct <= 0 ? 'bad' : (m.total_return_pct < m.buy_hold_return_pct || s.profitable_folds < s.folds / 2) ? 'mixed' : 'good'}`;
+      $('rs-tiles').innerHTML = [
+        ['Out of sample', fmt.pct(m.total_return_pct), cls(m.total_return_pct)],
+        ['Buy &amp; hold', fmt.pct(m.buy_hold_return_pct), cls(m.buy_hold_return_pct)],
+        ['Max drawdown', fmt.pct(m.max_drawdown_pct), 'neg'],
+        ['Sharpe', m.sharpe, cls(m.sharpe)],
+        ['Trades', m.trades, ''],
+        ['Blocks in profit', `${s.profitable_folds}/${s.folds}`, ''],
+        ['In-sample avg', fmt.pct(s.avg_in_sample_return_pct), ''],
+        ['Out-of-sample avg', fmt.pct(s.avg_out_of_sample_return_pct), cls(s.avg_out_of_sample_return_pct)],
+      ].map(([l, val, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}">${val}</div></div>`).join('');
+      drawLine($('rs-chart'), (r.equity || []).map((e) => ({ x: e.ts, y: e.equity })), { empty: 'no out-of-sample equity' });
+      head.innerHTML = '<tr><th>Block</th><th>Trained on</th><th class="num">In sample</th><th>Tested on</th><th class="num">Out of sample</th><th>Settings it chose</th></tr>';
+      body.innerHTML = r.folds.map((f) => `<tr><td>${f.index}</td><td>${f.train.from.slice(0,10)} → ${f.train.to.slice(0,10)}</td>`
+        + `<td class="num ${cls(f.train_metrics.total_return_pct)}">${fmt.pct(f.train_metrics.total_return_pct)}</td>`
+        + `<td>${f.test.from.slice(0,10)} → ${f.test.to.slice(0,10)}</td>`
+        + `<td class="num ${cls(f.test_metrics.total_return_pct)}">${fmt.pct(f.test_metrics.total_return_pct)}</td>`
+        + `<td class="muted small">${Object.entries(f.chosen).map(([k, v]) => `${k}=${v}`).join(' ')}</td></tr>`).join('');
+      $('rs-apply-note').textContent = 'Applies the settings the last block chose.';
+    } else {
+      const v = $('rs-verdict'); v.textContent = r.note; v.className = 'confirm-box mixed';
+      $('rs-tiles').innerHTML = '';
+      drawLine($('rs-chart'), [], { empty: 'run a walk-forward test to see an out-of-sample curve' });
+      head.innerHTML = '<tr><th class="num">#</th><th class="num">Return</th><th class="num">Drawdown</th><th class="num">Sharpe</th><th class="num">Trades</th><th class="num">Win rate</th><th>Settings</th></tr>';
+      body.innerHTML = (r.top || []).map((c, i) => `<tr><td class="num">${i + 1}</td>`
+        + `<td class="num ${cls(c.metrics.total_return_pct)}">${fmt.pct(c.metrics.total_return_pct)}</td>`
+        + `<td class="num neg">${fmt.pct(c.metrics.max_drawdown_pct)}</td><td class="num">${c.metrics.sharpe}</td>`
+        + `<td class="num">${c.metrics.trades}</td><td class="num">${c.metrics.win_rate_pct}%</td>`
+        + `<td class="muted small">${Object.entries(c.params).map(([k, v]) => `${k}=${v}`).join(' ')}</td></tr>`).join('');
+      $('rs-apply-note').textContent = 'Applies the best in-sample settings. Test them walk-forward first.';
+    }
+  }
+  // One timer refreshes whatever long job is in flight, and survives a failed request.
+  setInterval(async () => {
+    if (!document.querySelector('#tab-research').classList.contains('active')) return;
+    try { renderResearch(await api('/api/research')); } catch (e) { /* try again next tick */ }
+  }, 1500);
+
+  $('rs-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { csv: $('rs-source').value, mode: $('rs-mode').value, folds: Number($('rs-folds').value),
+                   sample: Number($('rs-sample').value), objective: $('rs-objective').value };
+    try { renderResearch(await api('/api/research', body)); } catch (err) { showAlert(err.message); }
+  });
+  $('rs-apply').addEventListener('click', async () => {
+    if (!lastResearch) return;
+    const params = lastResearch.mode === 'walk-forward'
+      ? (lastResearch.folds[lastResearch.folds.length - 1] || {}).chosen
+      : ((lastResearch.top || [])[0] || {}).params;
+    if (!params) { showAlert('No settings to apply.'); return; }
+    const text = Object.entries(params).map(([k, v]) => `${k} = ${v}`).join('<br>');
+    if (!(await confirmDialog('Use these settings?', `${text}<br><br>They are written to your configuration and apply the next time you press Start.`))) return;
+    try { await api('/api/research/apply', { params }); toast('Settings applied', 'They apply on the next Start.'); loadSettings(); poll(); }
+    catch (e) { showAlert(e.message); }
+  });
+  $('dl-run').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const body = { symbol: $('dl-symbol').value, timeframe: $('dl-timeframe').value,
+                   from: $('dl-from').value || null, to: $('dl-to').value || null };
+    try {
+      await api('/api/download', body);
+      $('dl-status').textContent = 'downloading…';
+      const poll2 = setInterval(async () => {
+        const d = await api('/api/download');
+        if (d.state === 'running') { $('dl-status').textContent = 'downloading…'; return; }
+        clearInterval(poll2);
+        if (d.state === 'error') { $('dl-status').textContent = ''; showAlert(`Download failed: ${d.error}`, 'error', 15000); return; }
+        $('dl-status').textContent = `${d.candles.toLocaleString()} candles saved`;
+        toast('History downloaded', `${d.candles.toLocaleString()} candles · ${d.from.slice(0,10)} → ${d.to.slice(0,10)}`);
+        loadResearch(); loadSamples();
+      }, 1500);
+    } catch (err) { showAlert(err.message); }
+  });
+
+  // ----- analytics -----
+  async function loadAnalytics() {
+    try {
+      const a = await api('/api/analytics');
+      $('an-tiles').innerHTML = [
+        ['Realised P/L', fmt.money(a.pnl), cls(a.pnl)], ['Trades', a.trades, ''],
+        ['Win rate', a.trades ? `${a.win_rate_pct}%` : '—', ''],
+        ['Expectancy / trade', a.trades ? fmt.money(a.expectancy) : '—', cls(a.expectancy)],
+        ['Fees paid', fmt.money(a.fees), ''],
+        ['Best / worst', a.trades ? `${fmt.money(a.best)} / ${fmt.money(a.worst)}` : '—', ''],
+        ['Median hold', a.durations && a.durations.median_hours != null ? `${a.durations.median_hours}h` : '—', ''],
+        ['Streaks', a.streaks ? `${a.streaks.longest_winning}W / ${a.streaks.longest_losing}L` : '—', ''],
+      ].map(([l, v, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}" style="font-size:19px">${v}</div></div>`).join('');
+      const mb = $('an-monthly').querySelector('tbody');
+      mb.innerHTML = (a.monthly || []).length ? a.monthly.map((m) => `<tr><td>${m.month}</td><td class="num">${m.trades}</td>`
+        + `<td class="num ${cls(m.pnl)}">${fmt.money(m.pnl)}</td><td class="num">${fmt.money(m.fees)}</td>`
+        + `<td class="num">${m.win_rate_pct}%</td><td class="num pos">${fmt.money(m.best)}</td><td class="num neg">${fmt.money(m.worst)}</td></tr>`).join('')
+        : '<tr><td colspan="7" class="muted">No closed trades yet.</td></tr>';
+      const eb = $('an-exits').querySelector('tbody');
+      const exits = Object.entries(a.by_exit || {});
+      eb.innerHTML = exits.length ? exits.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v.trades}</td>`
+        + `<td class="num ${cls(v.pnl)}">${fmt.money(v.pnl)}</td><td class="num">${v.win_rate_pct}%</td>`
+        + `<td class="num ${cls(v.avg_pnl)}">${fmt.money(v.avg_pnl)}</td></tr>`).join('')
+        : '<tr><td colspan="5" class="muted">Nothing yet.</td></tr>';
+      $('ex-trades').href = `/api/export?what=trades&token=${encodeURIComponent(TOKEN)}`;
+      $('ex-equity').href = `/api/export?what=equity&token=${encodeURIComponent(TOKEN)}`;
+    } catch (e) { showAlert(e.message); }
+  }
 
   // ----- why no trades -----
   async function loadWhy() {

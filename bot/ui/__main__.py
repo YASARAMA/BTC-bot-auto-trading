@@ -106,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_update:
         controller.start_updater()
+    controller.start_services()
     if args.replay:
         controller.start(replay=args.replay)
 

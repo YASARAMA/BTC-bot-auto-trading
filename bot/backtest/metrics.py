@@ -62,11 +62,9 @@ def compute_metrics(
     gross_profit = sum(t.pnl for t in wins)
     gross_loss = -sum(t.pnl for t in losses)
     exposure = float((equity["position_qty"] > 0).mean() * 100.0) if len(equity) else 0.0
-    profit_factor: float | None
-    if gross_loss > 0:
-        profit_factor = gross_profit / gross_loss
-    else:
-        profit_factor = None if gross_profit == 0 else float("inf")
+    # No losing trades means the profit factor is undefined rather than infinite; JSON has
+    # no way to express infinity, and every consumer already handles None as "not available".
+    profit_factor: float | None = (gross_profit / gross_loss) if gross_loss > 0 else None
     return {
         "start": start_ts,
         "end": end_ts,
@@ -81,7 +79,8 @@ def compute_metrics(
         "sharpe": round(sharpe_ratio(eq, tf_ms), 2),
         "trades": len(trades),
         "win_rate_pct": round(len(wins) / len(trades) * 100.0, 2) if trades else 0.0,
-        "profit_factor": (round(profit_factor, 2) if profit_factor not in (None, float("inf")) else profit_factor),
+        "profit_factor": round(profit_factor, 2) if profit_factor is not None else None,
+        "no_losing_trades": gross_loss == 0 and len(trades) > 0,
         "avg_trade_pnl": round(sum(t.pnl for t in trades) / len(trades), 2) if trades else 0.0,
         "avg_win": round(gross_profit / len(wins), 2) if wins else 0.0,
         "avg_loss": round(-gross_loss / len(losses), 2) if losses else 0.0,

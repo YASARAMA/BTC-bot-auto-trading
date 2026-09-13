@@ -347,3 +347,11 @@ footer a:hover { color: var(--text); }
 .why-hints { margin: 10px 0 0; padding-left: 18px; color: var(--text-3); font-size: 12px; }
 .why-hints li { margin-bottom: 5px; }
 input:invalid { border-color: var(--down); }
+
+a.btn { display: inline-flex; align-items: center; font: inherit; font-weight: 500; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 14px; text-decoration: none; transition: all .18s ease; }
+a.btn:hover { border-color: var(--border-strong); background: var(--panel-3); transform: translateY(-1px); }
+#rs-verdict { border-style: solid; border-left-width: 3px; line-height: 1.6; }
+#rs-verdict.good { border-left-color: var(--up); } #rs-verdict.bad { border-left-color: var(--down); }
+#rs-verdict.mixed { border-left-color: var(--warn); }

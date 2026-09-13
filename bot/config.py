@@ -85,6 +85,16 @@ class RiskConfig(StrictModel):
     kill_switch_file: str = "./data/KILL_SWITCH"
 
 
+class ExitsConfig(StrictModel):
+    """How an open position is managed after the entry. All multiples are of the ATR
+    measured when the position was opened. Zero turns a rule off."""
+
+    trailing_atr_mult: float = Field(0.0, ge=0.0, description="trail the stop this far below the highest price")
+    breakeven_after_atr: float = Field(0.0, ge=0.0, description="move the stop to entry once this much in profit")
+    partial_take_fraction: float = Field(0.0, ge=0.0, le=0.9, description="fraction of the position to sell early")
+    partial_take_atr: float = Field(1.0, gt=0.0, description="profit at which the partial sale happens")
+
+
 class PaperConfig(StrictModel):
     initial_cash: float = Field(10_000.0, gt=0.0)
     initial_base: float = Field(0.0, ge=0.0)
@@ -99,6 +109,9 @@ class NotifyConfig(StrictModel):
     on_halt: bool = True
     on_error: bool = True
     timeout_seconds: float = Field(10.0, gt=0.0)
+    telegram_commands: bool = Field(True, description="obey /status, /stop, /kill... from the configured chat")
+    watchdog_minutes: float = Field(15.0, ge=0.0, description="alert when no trading cycle for this long; 0 = off")
+    daily_report_hour_utc: int = Field(-1, ge=-1, le=23, description="send a daily summary at this UTC hour; -1 = off")
 
 
 class UpdateConfig(StrictModel):
@@ -118,6 +131,7 @@ class BotConfig(StrictModel):
     exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
+    exits: ExitsConfig = Field(default_factory=ExitsConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)

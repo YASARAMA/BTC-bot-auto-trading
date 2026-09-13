@@ -58,6 +58,9 @@ class TradingEngine:
         self.store = store
         self.notifier = notifier
         self.mode = mode
+        # A backtest replays thousands of candles: its fills and risk events are returned in
+        # the result, so logging each one would drown the live bot's own log.
+        self.quiet = mode == "backtest"
         self._clock = clock or exchange.now_ms
         self.position: Position | None = None
         self.last_candle_ts: int | None = None
@@ -92,6 +95,12 @@ class TradingEngine:
 
     def now(self) -> int:
         return int(self._clock())
+
+    def _log(self, event: str, level: int = logging.INFO, **fields: Any) -> None:
+        """Log an engine event, unless this engine is driving a backtest."""
+        if self.quiet:
+            return
+        log_event(log, event, level=level, **fields)
 
     # ----- account -----------------------------------------------------------------------
     def account(self, price: float, now_ms: int | None = None) -> AccountSnapshot:
@@ -169,7 +178,7 @@ class TradingEngine:
         self.persist()
         summary.update(position=self.position.to_dict() if self.position else None,
                        cash=float(bal.get(self.quote, {}).get("free", 0.0)), price=price)
-        log_event(log, "reconcile", **summary)
+        self._log("reconcile", **summary)
         return summary
 
     # ----- decisions ---------------------------------------------------------------------
@@ -194,12 +203,12 @@ class TradingEngine:
         price = fill_price if fill_price is not None else self.exchange.fetch_ticker_price(self.symbol)
         hi = range_high if range_high is not None else float(candle["high"])
         lo = range_low if range_low is not None else float(candle["low"])
-        exit_summary = self.check_protective(
+        exit_summary = self.manage_position(
             high=hi, low=lo, candle_ts=ts, now=now, open_price=float(candle["open"]) if exit_at_level else None,
             market_price=None if exit_at_level else price,
         )
         if exit_summary:
-            summary["protective"] = exit_summary
+            summary.update(exit_summary)
 
         signal = self.evaluate_strategy(df, ts, price)
         account = self.account(price, now)
@@ -215,7 +224,7 @@ class TradingEngine:
         else:
             summary["decision"] = {"rejected": decision.code, "reason": decision.reason}
         for ev in self.risk.state.events:
-            log_event(log, "risk_event", level=logging.WARNING, detail=ev)
+            self._log("risk_event", level=logging.WARNING, detail=ev)
             self.notifier.halt(ev)
         self.risk.state.events.clear()
 
@@ -252,10 +261,70 @@ class TradingEngine:
         """Intra-candle stop / take-profit check at the current market price."""
         now = now_ms if now_ms is not None else self.now()
         candle_ts = floor_ts(now, self.tf_ms)
-        out = self.check_protective(high=price, low=price, candle_ts=candle_ts, now=now, market_price=price)
+        out = self.manage_position(high=price, low=price, candle_ts=candle_ts, now=now, market_price=price)
         if out:
             self.persist()
         return out
+
+    def manage_position(self, *, high: float, low: float, candle_ts: int, now: int,
+                        market_price: float | None = None, open_price: float | None = None) -> dict[str, Any] | None:
+        """Run the exit policy over a price range: stop, partial take profit, trailing, breakeven.
+
+        Order matters and is deliberately pessimistic: within one candle we cannot know
+        whether the high or the low came first, so the stop is checked against the low
+        before the high is allowed to raise it.
+        """
+        pos = self.position
+        if pos is None or pos.qty <= 0:
+            return None
+        out: dict[str, Any] = {}
+        exits = self.cfg.exits
+
+        # 1. the stop and take profit as they stand
+        hit = self.check_protective(high=high, low=low, candle_ts=candle_ts, now=now,
+                                    market_price=market_price, open_price=open_price)
+        if hit:
+            out["protective"] = hit
+        if self.position is None:
+            return out
+
+        pos = self.position
+        atr = pos.atr_at_entry
+        pos.highest_price = max(pos.highest_price or pos.entry_price, high)
+
+        # 2. partial take profit: bank some of the move, then run the rest with a free stop
+        if (exits.partial_take_fraction > 0 and not pos.partial_done and atr > 0
+                and high >= pos.entry_price + exits.partial_take_atr * atr):
+            level = pos.entry_price + exits.partial_take_atr * atr
+            price = market_price if market_price is not None else level
+            qty = round_step(pos.qty * exits.partial_take_fraction, self.exchange.market_info(self.symbol).amount_step)
+            info = self.exchange.market_info(self.symbol)
+            if qty > 0 and qty >= info.min_amount and qty * price >= max(info.min_notional, self.cfg.risk.min_order_notional):
+                intent = OrderIntent(side=Side.SELL, qty=qty, ref_price=price, kind="take_profit",
+                                     candle_ts=candle_ts, reason=f"partial take profit at {exits.partial_take_atr:g}x ATR",
+                                     confidence=1.0)
+                order = self.executor.execute(intent)
+                if order is not None:
+                    self._apply_fill(order, intent, now, price)
+                    out["partial"] = {"qty": qty, "price": price}
+            pos.partial_done = True  # do not retry every candle, even when the size was too small
+            if self.position is None:
+                return out
+            pos = self.position
+
+        # 3. move the stop up: breakeven first, then the trailing stop
+        new_stop = pos.stop_loss
+        if exits.breakeven_after_atr > 0 and atr > 0 and pos.highest_price >= pos.entry_price + exits.breakeven_after_atr * atr:
+            breakeven = pos.entry_price * (1 + self.cfg.exchange.fee_rate * 2)
+            new_stop = max(new_stop or 0.0, breakeven)
+        if exits.trailing_atr_mult > 0 and atr > 0:
+            trail = pos.highest_price - exits.trailing_atr_mult * atr
+            new_stop = max(new_stop or 0.0, trail)
+        if new_stop is not None and (pos.stop_loss is None or new_stop > pos.stop_loss + 1e-9):
+            previous, pos.stop_loss = pos.stop_loss, new_stop
+            out["stop_raised"] = {"from": previous, "to": round(new_stop, 8)}
+            self._log("stop_raised", **out["stop_raised"], highest=pos.highest_price)
+        return out or None
 
     def check_protective(
         self,
@@ -271,7 +340,7 @@ class TradingEngine:
         if decision is None:
             return None
         if isinstance(decision, Rejection):
-            log_event(log, "protective_exit_blocked", level=logging.WARNING, reason=decision.reason)
+            self._log("protective_exit_blocked", level=logging.WARNING, reason=decision.reason)
             return {"blocked": decision.reason}
         intent = decision
         if market_price is not None:
@@ -345,7 +414,7 @@ class TradingEngine:
             kind="entry" if side == Side.BUY else "exit",
             candle_ts=int(now), reason=reason, stop_loss=stop_loss, take_profit=take_profit, confidence=1.0,
         )
-        log_event(log, "manual_order", side=side.value, qty=order_qty, price=price,
+        self._log("manual_order", side=side.value, qty=order_qty, price=price,
                   stop_loss=stop_loss, take_profit=take_profit)
         order = self.executor.execute(intent)
         if order is None:
@@ -368,7 +437,7 @@ class TradingEngine:
         self.position.stop_loss = stop_loss
         self.position.take_profit = take_profit
         self.persist()
-        log_event(log, "levels_changed", stop_loss=stop_loss, take_profit=take_profit, price=price)
+        self._log("levels_changed", stop_loss=stop_loss, take_profit=take_profit, price=price)
         return self.position.to_dict()
 
     # ----- fills -------------------------------------------------------------------------
@@ -383,20 +452,28 @@ class TradingEngine:
                 self.position.qty = total
                 self.position.fees_paid += order.fee
             else:
+                atr = 0.0
+                if intent.stop_loss and self.cfg.strategy.params.get("atr_stop_mult"):
+                    # ATR implied by the stop the strategy asked for, so the exit rules can
+                    # use the same volatility measure without recomputing it.
+                    atr = max(0.0, (fill_price - intent.stop_loss) / float(self.cfg.strategy.params["atr_stop_mult"]))
+                elif intent.stop_loss:
+                    atr = max(0.0, fill_price - intent.stop_loss) / 2.0
                 self.position = Position(
                     qty=qty, entry_price=fill_price, entry_ts=order.updated_at or now,
                     stop_loss=intent.stop_loss, take_profit=intent.take_profit,
                     entry_order_id=order.client_order_id, strategy=self.strategy.name, fees_paid=order.fee,
+                    atr_at_entry=atr, highest_price=fill_price, initial_stop=intent.stop_loss, initial_qty=qty,
                 )
             self.risk.record_entry(now)
-            log_event(log, "position_opened", **self.position.to_dict())
+            self._log("position_opened", **self.position.to_dict())
             self.notifier.fill(
                 f"BUY {qty:.6f} {self.base} @ {fill_price:.2f} stop={intent.stop_loss} tp={intent.take_profit} [{self.mode}]")
             return
 
         pos = self.position
         if pos is None:
-            log_event(log, "sell_without_position", level=logging.ERROR, order=order.to_dict())
+            self._log("sell_without_position", level=logging.ERROR, order=order.to_dict())
             return
         qty = min(qty, pos.qty)
         entry_fee_share = pos.fees_paid * (qty / pos.qty) if pos.qty else 0.0
@@ -421,10 +498,10 @@ class TradingEngine:
             pos.fees_paid -= entry_fee_share
         equity = self.account(mark_price, now).equity
         events = self.risk.on_trade_closed(trade, equity, now)
-        log_event(log, "trade_closed", **trade.to_dict(), equity=round(equity, 2))
+        self._log("trade_closed", **trade.to_dict(), equity=round(equity, 2))
         self.notifier.fill(
             f"SELL {qty:.6f} {self.base} @ {fill_price:.2f} ({intent.kind}) pnl={pnl:.2f} {self.quote} [{self.mode}]")
         for ev in events:
-            log_event(log, "risk_event", level=logging.WARNING, detail=ev)
+            self._log("risk_event", level=logging.WARNING, detail=ev)
             self.notifier.halt(ev)
         self.risk.state.events.clear()

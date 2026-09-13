@@ -422,3 +422,145 @@ def test_why_no_trades_explains_the_hold(ui):
     assert "kill switch" in " ".join(call(server, "/api/why")[1]["blockers"]).lower()
     call(server, "/api/kill", {"active": False})
     call(server, "/api/stop", {"wait": 10})
+
+
+def test_research_walk_forward_via_api(ui):
+    root, c, server = ui
+    # Real candles: a walk-forward test needs enough history for two blocks that both trade.
+    csv = "data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv"
+    code, started = call(server, "/api/research", {"csv": csv, "mode": "walk-forward", "folds": 2,
+                                                   "sample": 4, "min_trades": 2})
+    assert code == 200 and started["state"] == "running"
+    assert call(server, "/api/research", {"csv": csv})[0] == 409
+    done = wait_for(lambda: (lambda r: r if r["state"] in ("done", "error") else None)(call(server, "/api/research")[1]),
+                    timeout=240)
+    assert done["state"] == "done", done.get("error")
+    assert done["mode"] == "walk-forward" and len(done["folds"]) == 2
+    assert "out_of_sample" in done and done["verdict"]
+    for fold in done["folds"]:
+        assert fold["chosen"] and fold["test_metrics"]
+
+    chosen = done["folds"][-1]["chosen"]
+    code, applied = call(server, "/api/research/apply", {"params": chosen})
+    assert code == 200
+    saved = call(server, "/api/config")[1]["config"]["strategy"]["params"]
+    for k, v in chosen.items():
+        assert saved[k] == v, f"{k} was written to the configuration"
+    assert call(server, "/api/research/apply", {"params": {}})[0] == 400
+
+
+def test_research_grid_mode_marks_results_as_in_sample(ui):
+    root, c, server = ui
+    call(server, "/api/research", {"csv": "data/samples/synthetic.csv", "mode": "grid", "sample": 3, "min_trades": 1})
+    done = wait_for(lambda: (lambda r: r if r["state"] in ("done", "error") else None)(call(server, "/api/research")[1]),
+                    timeout=180)
+    assert done["state"] == "done" and done["mode"] == "grid"
+    assert done["top"] and "in-sample" in done["note"]
+    assert all("params" in c and "metrics" in c for c in done["top"])
+
+
+def test_analytics_and_csv_export(ui):
+    root, c, server = ui
+    # A hand-placed round trip gives the analytics something deterministic to summarise.
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.4})
+    wait_for(lambda: call(server, "/api/status")[1]["state"] == "running" and call(server, "/api/status")[1]["price"])
+    assert call(server, "/api/order", {"side": "buy", "quote_amount": 500})[0] == 200
+    assert call(server, "/api/order", {"side": "sell"})[0] == 200
+    call(server, "/api/stop", {"wait": 10})
+    wait_for(lambda: len(call(server, "/api/trades")[1]["trades"]) > 0, timeout=30)
+
+    code, a = call(server, "/api/analytics")
+    assert code == 200, a
+    assert a["trades"] > 0
+    assert a["monthly"] and a["by_exit"] and "expectancy" in a
+    assert "exit" in a["by_exit"], "the manual sell is recorded as a plain exit"
+    assert a["win_rate_pct"] >= 0 and a["durations"]["median_hours"] >= 0
+
+    import urllib.request
+
+    for what, header in (("trades", "entry_time,exit_time"), ("equity", "time,equity")):
+        url = f"{server.url}api/export?what={what}&token={server.token}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            body = resp.read().decode()
+            assert resp.headers["Content-Type"].startswith("text/csv")
+            assert f'filename="{what}.csv"' in resp.headers["Content-Disposition"]
+        assert body.splitlines()[0].startswith(header)
+        assert len(body.splitlines()) > 1
+    # the token is still required
+    try:
+        urllib.request.urlopen(f"{server.url}api/export?what=trades", timeout=10)
+        raise AssertionError("an export without a token must be refused")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 401
+
+
+def test_history_download_uses_the_exchange_and_caches(ui):
+    root, c, server = ui
+    from tests.test_feed import FakeMarket
+
+    frame = make_ohlcv(trending_series(), spread=0.002)
+    fake = FakeMarket(frame)
+    c.market_factory = lambda cfg: fake
+    from bot.common import iso as _iso
+
+    code, started = call(server, "/api/download", {
+        "symbol": "BTC/USDT", "timeframe": "1h",
+        "from": _iso(int(frame["ts"].iloc[0]))[:10], "to": _iso(int(frame["ts"].iloc[-1]))[:10]})
+    assert code == 200 and started["state"] == "running"
+    done = wait_for(lambda: (lambda d: d if d["state"] in ("done", "error") else None)(call(server, "/api/download")[1]),
+                    timeout=60)
+    assert done["state"] == "done", done.get("error")
+    assert done["candles"] > 0 and done["file"].endswith(".csv")
+    assert (root / done["file"]).exists()
+    assert any(s["path"] == done["file"].replace("\\", "/") for s in call(server, "/api/samples")[1]["details"])
+
+
+def test_telegram_commands_are_answered_and_restricted(ui):
+    root, c, server = ui
+    from bot.notify.telegram_control import TelegramControl
+
+    sent: list[dict] = []
+
+    def fake_request(method, params):
+        if method == "getUpdates":
+            return {"result": [
+                {"update_id": 1, "message": {"chat": {"id": 77}, "text": "/status"}},
+                {"update_id": 2, "message": {"chat": {"id": 77}, "text": "/pnl"}},
+                {"update_id": 3, "message": {"chat": {"id": 77}, "text": "/kill"}},
+                {"update_id": 4, "message": {"chat": {"id": 999}, "text": "/kill"}},
+            ]}
+        sent.append(params)
+        return {"ok": True}
+
+    tc = TelegramControl("token", "77", c._telegram_handlers(), request=fake_request)
+    assert tc.poll_once() == 3
+    assert tc.rejected == 1, "a message from another chat is ignored"
+    texts = [p["text"] for p in sent]
+    assert any("stopped" in t or "running" in t for t in texts)
+    assert any("No closed trades" in t or "trades" in t for t in texts)
+    assert c.kill_switch_path().exists(), "/kill turned the kill switch on"
+    assert "Kill switch ON" in texts[-1]
+    c.kill_switch(False)
+    assert "Unknown command" in tc.handle("/nonsense")
+    assert "/status" in tc.handle("/help")
+
+
+def test_watchdog_alerts_when_cycles_stop(ui):
+    root, c, server = ui
+    from bot.notify.telegram_control import Watchdog
+
+    alerts: list[str] = []
+    running = {"on": True}
+    last = {"ms": 1_000_000}
+    w = Watchdog(is_running=lambda: running["on"], last_cycle_ms=lambda: last["ms"],
+                 notify=alerts.append, stall_seconds=600)
+    assert w.check(now=1_000_000 + 60_000) is None, "a fresh cycle is fine"
+    assert w.check(now=1_000_000 + 900_000), "no cycle for 15 minutes raises the alarm"
+    assert "not being watched" in alerts[0]
+    assert w.check(now=1_000_000 + 1_000_000) is None, "it does not repeat the same alert"
+    assert len(alerts) == 1
+    last["ms"] = 3_000_000
+    w.check(now=3_000_000 + 60_000)
+    assert "resumed" in alerts[-1]
+    running["on"] = False
+    assert w.check(now=9_000_000) is None, "a stopped bot is not an emergency"

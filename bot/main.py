@@ -59,6 +59,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str | None = None,
                   replay_start: int | None = None) -> Runtime:
     strategy = get_strategy(cfg.strategy.name, cfg.strategy.params)
+    if strategy.warmup > cfg.exchange.candle_history:
+        raise ValueError(
+            f"strategy {strategy.name!r} needs {strategy.warmup} candles of history but "
+            f"exchange.candle_history is {cfg.exchange.candle_history}. The bot would never "
+            f"finish warming up. Raise candle_history to at least {strategy.warmup} in Settings, "
+            f"or use shorter strategy periods.")
     store = StateStore(cfg.state.db_path)
     notifier = Notifier(cfg.notify, secrets, prefix=f"[{cfg.exchange.symbol} {mode}] ")
     replay: CsvMarketData | None = None

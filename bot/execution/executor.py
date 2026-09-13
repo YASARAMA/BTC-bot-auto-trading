@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from bot.common import round_step
 from bot.execution.base import ExchangeClient
@@ -31,6 +31,7 @@ class OrderExecutor:
         order_poll_seconds: float,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], int] | None = None,
+        quiet: bool = False,
     ) -> None:
         self.exchange = exchange
         self.store = store
@@ -40,6 +41,12 @@ class OrderExecutor:
         self.poll = order_poll_seconds
         self._sleep = sleep
         self._clock = clock or exchange.now_ms
+        self.quiet = quiet  # a backtest returns its orders in the result instead of logging them
+
+    def _log(self, event: str, level: int = logging.INFO, **fields: Any) -> None:
+        if self.quiet:
+            return
+        log_event(log, event, level=level, **fields)
 
     def client_order_id(self, intent: OrderIntent) -> str:
         return make_client_order_id(self.strategy_name, self.symbol, intent.candle_ts, intent.side.value)
@@ -49,9 +56,9 @@ class OrderExecutor:
         existing = self.store.get_order(cid)
         if existing is not None:
             if existing.status == "open":
-                log_event(log, "order_resume", client_order_id=cid)
+                self._log("order_resume", client_order_id=cid)
                 return self._settle(existing)
-            log_event(log, "order_duplicate_suppressed", client_order_id=cid, status=existing.status,
+            self._log("order_duplicate_suppressed", client_order_id=cid, status=existing.status,
                       filled=existing.filled)
             return existing if existing.status == "closed" and existing.filled > 0 else None
 
@@ -59,7 +66,7 @@ class OrderExecutor:
         qty = round_step(intent.qty, info.amount_step)
         notional = qty * intent.ref_price
         if qty <= 0 or qty < info.min_amount or notional < info.min_notional:
-            log_event(log, "order_below_minimum", level=logging.WARNING, client_order_id=cid, qty=qty,
+            self._log("order_below_minimum", level=logging.WARNING, client_order_id=cid, qty=qty,
                       notional=round(notional, 2), min_amount=info.min_amount, min_notional=info.min_notional)
             return None
 
@@ -75,7 +82,7 @@ class OrderExecutor:
         except Exception as exc:
             # We do not know whether the exchange accepted it. Leave it 'open'; reconcile() on the
             # next start (or the next execute with the same id) resolves it against the exchange.
-            log_event(log, "order_submit_error", level=logging.ERROR, client_order_id=cid, error=str(exc))
+            self._log("order_submit_error", level=logging.ERROR, client_order_id=cid, error=str(exc))
             raise
         placed.candle_ts, placed.kind, placed.reason, placed.created_at = intent.candle_ts, intent.kind, intent.reason, now
         self.store.save_order(placed)
@@ -87,7 +94,7 @@ class OrderExecutor:
         current = order
         while not current.is_final:
             if time.monotonic() >= deadline:
-                log_event(log, "order_timeout_cancel", level=logging.WARNING, client_order_id=current.client_order_id,
+                self._log("order_timeout_cancel", level=logging.WARNING, client_order_id=current.client_order_id,
                           filled=current.filled, amount=current.amount)
                 current = self.exchange.cancel_order(current)
                 break
@@ -98,12 +105,12 @@ class OrderExecutor:
             current.status = "canceled"
         self.store.save_order(current)
         if current.filled < current.amount and current.filled > 0:
-            log_event(log, "order_partial_fill", level=logging.WARNING, client_order_id=current.client_order_id,
+            self._log("order_partial_fill", level=logging.WARNING, client_order_id=current.client_order_id,
                       filled=current.filled, amount=current.amount)
         if current.status == "rejected" or current.filled <= 0:
-            log_event(log, "order_not_filled", level=logging.WARNING, client_order_id=current.client_order_id,
+            self._log("order_not_filled", level=logging.WARNING, client_order_id=current.client_order_id,
                       status=current.status, reason=current.reason)
             return None
-        log_event(log, "order_filled", client_order_id=current.client_order_id, side=current.side.value,
+        self._log("order_filled", client_order_id=current.client_order_id, side=current.side.value,
                   filled=current.filled, avg_price=current.avg_price, fee=round(current.fee, 6), kind=current.kind)
         return current

@@ -50,6 +50,13 @@ risk:
   min_order_notional: 10.0         # quote currency
   kill_switch_file: ./data/KILL_SWITCH   # create this file to block ALL orders (entries and exits)
 
+exits:
+  # How an open position is managed. Multiples are of the ATR measured at entry; 0 = off.
+  trailing_atr_mult: 0.0      # trail the stop this far below the highest price since entry
+  breakeven_after_atr: 0.0    # move the stop to entry once the trade is this far in profit
+  partial_take_fraction: 0.0  # sell this fraction of the position early
+  partial_take_atr: 1.0       # ...once the trade is this far in profit
+
 paper:
   initial_cash: 10000.0
   initial_base: 0.0

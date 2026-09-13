@@ -34,6 +34,7 @@ class EmaRsiParams(BaseModel):
     atr_stop_mult: float = Field(2.0, gt=0.0)
     atr_tp_mult: float = Field(3.0, gt=0.0)
     trend_lookback: int = Field(5, ge=1)
+    trend_filter_period: int = Field(0, ge=0, description="only buy above this EMA; 0 turns the filter off")
     confidence_base: float = Field(0.5, ge=0.0, le=1.0)
     confidence_per_confirmation: float = Field(0.25, ge=0.0, le=1.0)
     warmup_factor: int = Field(3, ge=1, description="warmup = longest period * factor")
@@ -53,19 +54,43 @@ class EmaRsiStrategy(Strategy):
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
         self.p = EmaRsiParams.model_validate(self.raw_params)
+        self._pre: pd.DataFrame | None = None
+        self._pre_index: dict[int, int] = {}
 
     @property
     def warmup(self) -> int:
-        longest = max(self.p.ema_slow, self.p.rsi_period, self.p.atr_period)
-        return longest * self.p.warmup_factor + self.p.trend_lookback + 1
+        # Signal periods get the full factor because their exact value decides the entry.
+        # The trend line only decides "above or below", so a shorter seed is enough; a long
+        # filter would otherwise need more history than the bot keeps in memory.
+        signal = max(self.p.ema_slow, self.p.rsi_period, self.p.atr_period) * self.p.warmup_factor
+        trend = int(self.p.trend_filter_period * 1.25) + 20 if self.p.trend_filter_period else 0
+        return max(signal, trend) + self.p.trend_lookback + 1
 
-    def indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def precompute(self, df: pd.DataFrame) -> None:
+        """Compute the indicators once for a whole series (used by the backtester)."""
+        self._pre = self._compute(df)
+        self._pre_index = {int(ts): i for i, ts in enumerate(df["ts"].tolist())}
+
+    def clear_precomputed(self) -> None:
+        self._pre, self._pre_index = None, {}
+
+    def _compute(self, df: pd.DataFrame) -> pd.DataFrame:
         out = pd.DataFrame(index=df.index)
         out["ema_fast"] = ema(df["close"], self.p.ema_fast)
         out["ema_slow"] = ema(df["close"], self.p.ema_slow)
         out["rsi"] = rsi(df["close"], self.p.rsi_period)
         out["atr"] = atr(df, self.p.atr_period)
+        if self.p.trend_filter_period:
+            out["ema_trend"] = ema(df["close"], self.p.trend_filter_period)
         return out
+
+    def indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self._pre is not None and len(df):
+            end = self._pre_index.get(int(df["ts"].iloc[-1]))
+            if end is not None and end + 1 >= len(df):
+                # The last two rows are all on_candle() reads; slicing keeps it cheap.
+                return self._pre.iloc[end + 1 - len(df) : end + 1].reset_index(drop=True)
+        return self._compute(df)
 
     def on_candle(self, df: pd.DataFrame) -> Signal:
         validate_frame(df)
@@ -95,6 +120,14 @@ class EmaRsiStrategy(Strategy):
         )
 
         if cross_up:
+            if self.p.trend_filter_period:
+                trend = float(last.get("ema_trend", float("nan")))
+                if pd.isna(trend):
+                    return Signal.hold(f"trend filter not ready; {detail}")
+                if close <= trend:
+                    return Signal.hold(
+                        f"EMA cross up but price {close:.2f} is below the "
+                        f"{self.p.trend_filter_period}-period trend line {trend:.2f}; {detail}")
             if not (self.p.rsi_buy_min <= values["rsi"] <= self.p.rsi_buy_max):
                 return Signal.hold(
                     f"EMA cross up but RSI {values['rsi']:.1f} outside "

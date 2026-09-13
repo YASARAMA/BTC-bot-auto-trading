@@ -53,6 +53,8 @@
   <button data-tab="modes">Modes</button>
   <button data-tab="trades">History</button>
   <button data-tab="backtest">Backtest</button>
+  <button data-tab="research">Research</button>
+  <button data-tab="analytics">Analytics</button>
   <button data-tab="settings">Settings</button>
   <button data-tab="log">Log</button>
   <button data-tab="debug">Debug</button>
@@ -309,6 +311,107 @@
     </div>
   </section>
 
+  <!-- Research -->
+  <section id="tab-research" class="tab">
+    <div class="grid2 wide-left">
+      <div class="card">
+        <div class="card-title">Find parameters that actually hold up</div>
+        <p class="muted small">A single backtest is easy to fool yourself with: try enough settings and one will look
+          brilliant on the period you tried it on. <strong>Walk-forward</strong> optimises on one block of history and
+          then trades those settings on the next block, which the search never saw. That out-of-sample result is the
+          only number worth believing.</p>
+        <form id="rs-form" class="form">
+          <label>Data <select id="rs-source"></select><span class="muted small" id="rs-range"></span></label>
+          <div class="row">
+            <label>Test <select id="rs-mode">
+              <option value="walk-forward" selected>Walk-forward (honest, slower)</option>
+              <option value="grid">Parameter search only (in-sample)</option>
+            </select></label>
+            <label>Blocks <input type="number" id="rs-folds" min="2" max="10" value="4"></label>
+            <label>Combinations to try <input type="number" id="rs-sample" min="4" max="500" value="60"></label>
+            <label>Rank by <select id="rs-objective">
+              <option value="return_over_drawdown" selected>Return per unit of drawdown</option>
+              <option value="return">Total return</option>
+              <option value="sharpe">Sharpe</option>
+              <option value="profit_factor">Profit factor</option>
+            </select></label>
+          </div>
+          <div class="row"><button type="submit" class="primary" id="rs-run">Run</button>
+            <span class="muted small" id="rs-status"></span></div>
+          <div class="meter hidden" id="rs-meter"><i style="width:0%"></i></div>
+        </form>
+        <div id="rs-result" class="hidden">
+          <div class="confirm-box" id="rs-verdict" style="margin:14px 0"></div>
+          <div class="tiles compact" id="rs-tiles"></div>
+          <canvas id="rs-chart" height="200"></canvas>
+          <div class="table-wrap" style="margin-top:12px">
+            <table class="data" id="rs-table"><thead></thead><tbody></tbody></table>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button id="rs-apply" class="primary">Use these settings</button>
+            <span class="muted small" id="rs-apply-note"></span>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">Get more history</div>
+          <p class="muted small">Download candles from the exchange in Settings. More history means a more meaningful
+            test; a few months proves nothing.</p>
+          <form id="dl-form" class="form">
+            <div class="row">
+              <label>Market <input type="text" id="dl-symbol" placeholder="BTC/USDT"></label>
+              <label>Timeframe <select id="dl-timeframe"></select></label>
+            </div>
+            <div class="row">
+              <label>From <input type="date" id="dl-from"></label>
+              <label>To <input type="date" id="dl-to"></label>
+            </div>
+            <div class="row"><button class="primary" id="dl-run">Download</button><span class="muted small" id="dl-status"></span></div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">How to read the verdict</div>
+          <p class="muted small">Out-of-sample return below zero means the settings fit the past and nothing more.
+            Profitable in only half the blocks means one lucky stretch. Beating buy and hold is the bar that matters
+            for a spot bot, because holding is free.</p>
+          <p class="muted small">The gap between in-sample and out-of-sample return is the honest discount to apply to
+            any backtest you run afterwards.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Analytics -->
+  <section id="tab-analytics" class="tab">
+    <div class="tiles" id="an-tiles"></div>
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">Profit by month</div>
+        <div class="table-wrap"><table class="data" id="an-monthly">
+          <thead><tr><th>Month</th><th class="num">Trades</th><th class="num">P/L</th><th class="num">Fees</th><th class="num">Win rate</th><th class="num">Best</th><th class="num">Worst</th></tr></thead>
+          <tbody><tr><td colspan="7" class="muted">No closed trades yet.</td></tr></tbody>
+        </table></div>
+      </div>
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">By exit type</div>
+          <div class="table-wrap"><table class="data" id="an-exits">
+            <thead><tr><th>Exit</th><th class="num">Trades</th><th class="num">P/L</th><th class="num">Win rate</th><th class="num">Average</th></tr></thead><tbody></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Export</div>
+          <p class="muted small">Everything the bot recorded, for a spreadsheet or an accountant.</p>
+          <div class="row">
+            <a class="btn" id="ex-trades" href="#">Trades CSV</a>
+            <a class="btn" id="ex-equity" href="#">Equity CSV</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Settings -->
   <section id="tab-settings" class="tab">
     <div class="grid2">
@@ -371,7 +474,11 @@
           </form>
         </div>
         <div class="card">
-          <div class="card-title">Notifications</div>
+          <div class="card-title">Notifications &amp; phone control</div>
+          <p class="muted small">With a Telegram bot token and chat id you can send
+            <code>/status</code>, <code>/pnl</code>, <code>/position</code>, <code>/why</code>, <code>/stop</code>,
+            <code>/start</code>, <code>/kill</code> and <code>/unkill</code> from your phone. Only your chat is obeyed.
+            <span id="tg-state"></span></p>
           <form id="notif-form" class="form">
             <label>Telegram bot token <input type="password" id="n-tg-token" autocomplete="off"></label>
             <label>Telegram chat id <input type="text" id="n-tg-chat" autocomplete="off"></label>

@@ -2,6 +2,25 @@
 
 Every entry is one released build. The app shows the newest entry after it updates itself.
 
+## 0.7.0
+
+- **Parameter search and walk-forward testing.** A Research tab that tries hundreds of
+  parameter sets and then tests the winners on data the search never saw. It ends with a
+  plain verdict, including "do not trade this" when the result does not hold up.
+- **History download.** Pull years of candles straight from the exchange into a local file
+  and use them for backtests and searches.
+- **Better exits.** A trailing stop, a move to breakeven once a trade is in profit, and a
+  partial take profit that banks part of the position early. Plus a trend filter that only
+  buys above a longer moving average.
+- **Telegram control.** Send /status, /pnl, /position, /why, /stop, /start, /kill and
+  /unkill from your phone. Only the chat you configured is obeyed.
+- **Watchdog.** If the bot stops producing cycles while it is supposed to be trading, you
+  get an alert instead of silence.
+- **Analytics and exports.** Profit by month, expectancy per trade, results per exit type,
+  streaks and trade durations, plus CSV export of every trade and the equity curve.
+- **Faster backtests.** Indicators are computed once per run instead of once per candle,
+  which makes a backtest about nine times faster with identical results.
+
 ## 0.6.1
 
 - **Backtest dates.** Each data file now shows the period it covers, the date pickers are

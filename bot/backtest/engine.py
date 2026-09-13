@@ -63,13 +63,14 @@ def run_backtest(
     executor = OrderExecutor(
         exchange, store, symbol=symbol, strategy_name=strategy.name,
         order_timeout_seconds=cfg.exchange.order_timeout_seconds, order_poll_seconds=0.0,
-        sleep=lambda _s: None, clock=lambda: clock["now"],
+        sleep=lambda _s: None, clock=lambda: clock["now"], quiet=True,
     )
     engine = TradingEngine(
         cfg=cfg, strategy=strategy, risk=risk, exchange=exchange, executor=executor, store=store,
         notifier=Notifier(cfg.notify), clock=lambda: clock["now"], mode="backtest",
     )
 
+    strategy.precompute(df)
     n = len(df)
     window = cfg.exchange.candle_history
     warm = strategy.warmup
@@ -95,6 +96,7 @@ def run_backtest(
             acct = engine.account(last_price)
             store.save_equity(ts + 1, acct.equity, acct.cash, 0.0, last_price)
 
+    strategy.clear_precomputed()
     equity = pd.DataFrame(store.equity_curve())
     trades = store.trades()
     metrics = compute_metrics(equity, trades, tf_ms=tf_ms, initial_cash=cash, first_price=first_price, last_price=last_price)
