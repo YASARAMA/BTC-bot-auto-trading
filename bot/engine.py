@@ -7,6 +7,7 @@ Every state change is persisted so a restart resumes exactly where it stopped.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -62,6 +63,10 @@ class TradingEngine:
         # the result, so logging each one would drown the live bot's own log.
         self.quiet = mode == "backtest"
         self._clock = clock or exchange.now_ms
+        # The trading loop and the UI both act on this engine: a manual Buy can land in the
+        # middle of a candle being processed. One lock makes each of those whole, so the
+        # position and the database can never be half-updated by two threads at once.
+        self.lock = threading.RLock()
         self.position: Position | None = None
         self.last_candle_ts: int | None = None
         self.unmanaged_base = 0.0
@@ -118,6 +123,10 @@ class TradingEngine:
     # ----- reconcile ---------------------------------------------------------------------
     def reconcile(self, price: float | None = None) -> dict[str, Any]:
         """Bring local state in line with the exchange before trading. Never places entries."""
+        with self.lock:
+            return self._reconcile(price)
+
+    def _reconcile(self, price: float | None = None) -> dict[str, Any]:
         now = self.now()
         price = price if price is not None else self.exchange.fetch_ticker_price(self.symbol)
         summary: dict[str, Any] = {"resolved_orders": 0, "canceled_unknown": 0, "warnings": []}
@@ -192,6 +201,19 @@ class TradingEngine:
         exit_at_level: bool = False,
     ) -> dict[str, Any]:
         """Evaluate the newest closed candle in df. Returns a summary dict for logging."""
+        with self.lock:
+            return self._process_candle(df, fill_price=fill_price, range_high=range_high,
+                                        range_low=range_low, exit_at_level=exit_at_level)
+
+    def _process_candle(
+        self,
+        df: pd.DataFrame,
+        *,
+        fill_price: float | None = None,
+        range_high: float | None = None,
+        range_low: float | None = None,
+        exit_at_level: bool = False,
+    ) -> dict[str, Any]:
         candle = df.iloc[-1]
         ts = int(candle["ts"])
         now = self.now()
@@ -259,12 +281,13 @@ class TradingEngine:
 
     def process_tick(self, price: float, now_ms: int | None = None) -> dict[str, Any] | None:
         """Intra-candle stop / take-profit check at the current market price."""
-        now = now_ms if now_ms is not None else self.now()
-        candle_ts = floor_ts(now, self.tf_ms)
-        out = self.manage_position(high=price, low=price, candle_ts=candle_ts, now=now, market_price=price)
-        if out:
-            self.persist()
-        return out
+        with self.lock:
+            now = now_ms if now_ms is not None else self.now()
+            candle_ts = floor_ts(now, self.tf_ms)
+            out = self.manage_position(high=price, low=price, candle_ts=candle_ts, now=now, market_price=price)
+            if out:
+                self.persist()
+            return out
 
     def manage_position(self, *, high: float, low: float, candle_ts: int, now: int,
                         market_price: float | None = None, open_price: float | None = None) -> dict[str, Any] | None:
@@ -374,6 +397,20 @@ class TradingEngine:
         signal gates (confidence, cooldown, daily halt) do not: this is a human decision.
         Sizing is still capped by the cash or coins actually available.
         """
+        with self.lock:
+            return self._manual_order(side, qty=qty, quote_amount=quote_amount, stop_loss=stop_loss,
+                                      take_profit=take_profit, reason=reason)
+
+    def _manual_order(
+        self,
+        side: Side,
+        *,
+        qty: float | None = None,
+        quote_amount: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        reason: str = "manual order from the UI",
+    ) -> dict[str, Any]:
         now = self.now()
         price = self.exchange.fetch_ticker_price(self.symbol)
         if self.risk.kill_switch_active():
@@ -427,6 +464,10 @@ class TradingEngine:
 
     def set_protective_levels(self, stop_loss: float | None, take_profit: float | None) -> dict[str, Any]:
         """Move the stop loss / take profit of the open position."""
+        with self.lock:
+            return self._set_protective_levels(stop_loss, take_profit)
+
+    def _set_protective_levels(self, stop_loss: float | None, take_profit: float | None) -> dict[str, Any]:
         if self.position is None:
             raise ValueError("no open position")
         price = self.exchange.fetch_ticker_price(self.symbol)

@@ -34,3 +34,40 @@ def test_trades_equity_and_state(tmp_path):
     # survives reopen
     again = StateStore(tmp_path / "s.sqlite")
     assert again.get_state("a") == {"x": 1} and len(again.trades()) == 1
+
+
+def test_the_store_survives_several_threads_at_once(tmp_path):
+    """The trading loop, the HTTP API and the notifier share one connection. Without a
+    lock sqlite raises on concurrent use, which showed up as a 500 from the UI whenever a
+    manual order landed while a candle was being processed."""
+    import threading
+
+    from bot.models import Order, Side
+
+    store = StateStore(tmp_path / "threads.db")
+    errors: list[Exception] = []
+
+    def hammer(worker: int) -> None:
+        try:
+            for i in range(60):
+                cid = f"w{worker}-{i}"
+                store.save_order(Order(client_order_id=cid, symbol="BTC/USDT", side=Side.BUY, type="market",
+                                       amount=0.1, status="open", created_at=i, updated_at=i))
+                store.save_equity(worker * 1000 + i, 100.0 + i, 50.0, 0.1, 20_000.0)
+                store.set_state(f"k{worker}", i)
+                store.get_order(cid)
+                store.recent_orders(5)
+                store.equity_curve()
+        except Exception as exc:  # noqa: BLE001 - reported below so the assert names it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(w,)) for w in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not errors, f"concurrent access raised: {errors[:3]}"
+    assert len(store.recent_orders(1000)) == 6 * 60
+    assert len(store.equity_curve()) == 6 * 60
+    store.close()

@@ -26,6 +26,11 @@ Every entry is one released build. The app shows the newest entry after it updat
   instead of crossing the spread, paying the lower maker fee and no slippage. The catch is
   modelled honestly: an order the market never reaches does not fill, and that trade is
   missed. Exits always stay market orders, because an exit has to happen.
+- **Fixed: a manual order during a candle could fail or lose data.** The trading loop and
+  the UI share one database connection, and using it from both at once made SQLite raise -
+  the UI showed a 500, and orders, trades or equity rows could silently go unwritten. Every
+  statement now runs under a lock, and a candle, a tick, a manual order and a reconcile are
+  each one indivisible step.
 - **Fixed: leftover settings no longer stop the bot.** Switching from the AI strategy back
   to a technical one used to leave `model` and `mode` in config.yaml, and the next Start
   died with "Extra inputs are not permitted". Those settings are now dropped, named in the

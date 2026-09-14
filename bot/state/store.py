@@ -1,8 +1,15 @@
-"""SQLite persistence for orders, trades, the equity curve and key/value bot state."""
+"""SQLite persistence for orders, trades, the equity curve and key/value bot state.
+
+One connection is shared by the trading loop, the HTTP API and the notifier threads, so
+every statement runs under a lock. Without it two threads can use the same connection at
+the same moment - the operator pressing Buy while a candle closes is enough - and sqlite
+raises instead of writing.
+"""
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -64,9 +71,30 @@ class StateStore:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
+
+    def _write(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """Run one statement and commit. Returns the new row id, where there is one."""
+        with self._lock:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def _write_many(self, sql: str, rows: list[tuple[Any, ...]]) -> None:
+        with self._lock:
+            self.conn.executemany(sql, rows)
+            self.conn.commit()
+
+    def _one(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self.conn.execute(sql, params).fetchone()
+
+    def _all(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self.conn.execute(sql, params).fetchall()
 
     def _migrate(self) -> None:
         """Add columns introduced after a user's database was created.
@@ -79,11 +107,12 @@ class StateStore:
             self.conn.execute("ALTER TABLE orders ADD COLUMN price REAL")
 
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
     # ----- orders --------------------------------------------------------------------
     def save_order(self, order: Order) -> None:
-        self.conn.execute(
+        self._write(
             """
             INSERT INTO orders (client_order_id, exchange_order_id, symbol, side, type, price, amount, filled,
                                 avg_price, fee, status, candle_ts, kind, reason, created_at, updated_at)
@@ -100,18 +129,17 @@ class StateStore:
                 order.candle_ts, order.kind, order.reason, order.created_at, order.updated_at,
             ),
         )
-        self.conn.commit()
 
     def get_order(self, client_order_id: str) -> Order | None:
-        row = self.conn.execute("SELECT * FROM orders WHERE client_order_id = ?", (client_order_id,)).fetchone()
+        row = self._one("SELECT * FROM orders WHERE client_order_id = ?", (client_order_id,))
         return self._row_to_order(row) if row else None
 
     def open_orders(self) -> list[Order]:
-        rows = self.conn.execute("SELECT * FROM orders WHERE status = 'open' ORDER BY created_at").fetchall()
+        rows = self._all("SELECT * FROM orders WHERE status = 'open' ORDER BY created_at")
         return [self._row_to_order(r) for r in rows]
 
     def recent_orders(self, limit: int = 50) -> list[Order]:
-        rows = self.conn.execute("SELECT * FROM orders ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        rows = self._all("SELECT * FROM orders ORDER BY created_at DESC LIMIT ?", (limit,))
         return [self._row_to_order(r) for r in rows]
 
     @staticmethod
@@ -137,7 +165,7 @@ class StateStore:
 
     # ----- trades --------------------------------------------------------------------
     def save_trade(self, trade: Trade) -> int:
-        cur = self.conn.execute(
+        return self._write(
             """
             INSERT INTO trades (symbol, strategy, qty, entry_ts, entry_price, exit_ts, exit_price, fees,
                                 pnl, pnl_pct, exit_reason, entry_order_id, exit_order_id)
@@ -149,11 +177,9 @@ class StateStore:
                 trade.entry_order_id, trade.exit_order_id,
             ),
         )
-        self.conn.commit()
-        return int(cur.lastrowid or 0)
 
     def trades(self) -> list[Trade]:
-        rows = self.conn.execute("SELECT * FROM trades ORDER BY exit_ts, id").fetchall()
+        rows = self._all("SELECT * FROM trades ORDER BY exit_ts, id")
         return [
             Trade(
                 symbol=r["symbol"], strategy=r["strategy"], qty=r["qty"], entry_ts=r["entry_ts"],
@@ -166,30 +192,26 @@ class StateStore:
 
     # ----- equity --------------------------------------------------------------------
     def save_equity(self, ts: int, equity: float, cash: float, position_qty: float, price: float) -> None:
-        self.conn.execute(
+        self._write(
             "INSERT OR REPLACE INTO equity (ts, equity, cash, position_qty, price) VALUES (?, ?, ?, ?, ?)",
             (ts, equity, cash, position_qty, price),
         )
-        self.conn.commit()
 
     def equity_curve(self) -> list[dict[str, float]]:
-        rows = self.conn.execute("SELECT * FROM equity ORDER BY ts").fetchall()
+        rows = self._all("SELECT * FROM equity ORDER BY ts")
         return [dict(r) for r in rows]
 
     # ----- key/value state -----------------------------------------------------------
     def get_state(self, key: str, default: Any = None) -> Any:
-        row = self.conn.execute("SELECT value FROM bot_state WHERE key = ?", (key,)).fetchone()
+        row = self._one("SELECT value FROM bot_state WHERE key = ?", (key,))
         return json.loads(row["value"]) if row else default
 
     def set_state(self, key: str, value: Any) -> None:
-        self.conn.execute(
-            "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)", (key, json.dumps(value, default=str))
-        )
-        self.conn.commit()
+        self._write("INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                    (key, json.dumps(value, default=str)))
 
     def set_many(self, items: Iterable[tuple[str, Any]]) -> None:
-        self.conn.executemany(
+        self._write_many(
             "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
             [(k, json.dumps(v, default=str)) for k, v in items],
         )
-        self.conn.commit()

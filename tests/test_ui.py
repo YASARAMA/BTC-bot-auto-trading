@@ -407,7 +407,8 @@ def test_why_no_trades_explains_the_hold(ui):
     assert code == 200 and "The bot is stopped. Press Start." in why["blockers"]
 
     call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.02})
-    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 120)
+    # 120 cycles is about 3 seconds of replay here, but a loaded CI runner needs far longer.
+    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 120, timeout=120.0)
     why = call(server, "/api/why")[1]
     assert why["candles_evaluated"] > 0
     assert sum(why["decisions"].values()) == why["candles_evaluated"]
