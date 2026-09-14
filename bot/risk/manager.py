@@ -58,9 +58,14 @@ class AccountSnapshot:
 
 
 class RiskManager:
-    def __init__(self, cfg: RiskConfig, fee_rate: float, state: RiskState | None = None) -> None:
+    def __init__(self, cfg: RiskConfig, fee_rate: float, state: RiskState | None = None,
+                 slippage_bps: float = 0.0) -> None:
         self.cfg = cfg
         self.fee_rate = fee_rate
+        # A market buy fills a little above the price it was sized at. Ignoring that made a
+        # position sized to the whole account unaffordable by exactly the slippage, and the
+        # exchange rejected it - invisible at the default 25% cap, fatal at 100%.
+        self.slippage = slippage_bps / 10_000.0
         self.state = state or RiskState()
 
     # ----- bookkeeping ---------------------------------------------------------------
@@ -178,16 +183,22 @@ class RiskManager:
         price = account.price
         if price <= 0:
             return Rejection("no valid price", code="no_price")
-        if signal.stop_loss is None or signal.stop_loss <= 0 or signal.stop_loss >= price:
+        stopless = signal.stop_loss is None
+        if stopless and not self.cfg.allow_entry_without_stop:
+            return Rejection("entry needs a stop loss (set risk.allow_entry_without_stop to trade without one)",
+                             code="bad_stop")
+        if not stopless and (signal.stop_loss <= 0 or signal.stop_loss >= price):
             return Rejection(f"entry needs a stop loss below price (got {signal.stop_loss})", code="bad_stop")
 
         # ----- sizing -----
+        # Fixed-fractional: risk a fixed share of equity between entry and stop. Without a
+        # stop there is no distance to divide by, so such an entry is sized by the position
+        # cap alone - which is why it has to be asked for explicitly.
         risk_amount = account.equity * self.cfg.risk_per_trade_pct / 100.0
-        stop_distance = price - signal.stop_loss
-        qty_by_risk = risk_amount / stop_distance
+        qty_by_risk = float("inf") if stopless else risk_amount / (price - signal.stop_loss)
         max_notional = account.equity * self.cfg.max_position_pct / 100.0
         qty_by_cap = max_notional / price
-        affordable = account.cash / (price * (1.0 + self.fee_rate))
+        affordable = account.cash / (price * (1.0 + self.fee_rate) * (1.0 + self.slippage))
         qty = max(0.0, min(qty_by_risk, qty_by_cap, affordable))
         notional = qty * price
         if notional < self.cfg.min_order_notional:

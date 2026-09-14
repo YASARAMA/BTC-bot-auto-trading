@@ -105,7 +105,7 @@ def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str |
         max_retries=cfg.exchange.max_retries, backoff_base_seconds=cfg.exchange.backoff_base_seconds,
         backoff_max_seconds=cfg.exchange.backoff_max_seconds, sleep=(lambda _s: None) if replay else None,
     )
-    risk = RiskManager(cfg.risk, fee_rate=cfg.exchange.fee_rate)
+    risk = RiskManager(cfg.risk, fee_rate=cfg.exchange.fee_rate, slippage_bps=cfg.exchange.slippage_bps)
     executor = OrderExecutor(
         exchange, store, symbol=cfg.exchange.symbol, strategy_name=strategy.name,
         order_timeout_seconds=cfg.exchange.order_timeout_seconds, order_poll_seconds=cfg.exchange.order_poll_seconds,

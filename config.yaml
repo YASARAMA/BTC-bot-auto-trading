@@ -47,6 +47,7 @@ strategy:
 risk:
   risk_per_trade_pct: 1.0          # fixed fractional: 1% of equity at risk between entry and stop
   max_position_pct: 25.0           # position notional cap as % of equity
+  allow_entry_without_stop: false  # normally every entry needs a stop: the size comes from the distance to it
   max_daily_loss_pct: 3.0          # equity down 3% from the UTC day's start -> no entries until next day
   max_consecutive_losses: 3        # then pause entries for cooldown_minutes
   cooldown_minutes: 240

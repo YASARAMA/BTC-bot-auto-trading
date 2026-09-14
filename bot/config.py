@@ -83,6 +83,9 @@ class StrategyConfig(StrictModel):
 class RiskConfig(StrictModel):
     risk_per_trade_pct: float = Field(1.0, gt=0.0, le=100.0)
     max_position_pct: float = Field(25.0, gt=0.0, le=100.0)
+    allow_entry_without_stop: bool = Field(
+        False, description="size an entry that has no stop by max_position_pct instead of refusing it; "
+                           "needed only by the buy_hold benchmark")
     max_daily_loss_pct: float = Field(3.0, gt=0.0, le=100.0)
     max_consecutive_losses: int = Field(3, ge=1)
     cooldown_minutes: float = Field(240.0, ge=0.0)

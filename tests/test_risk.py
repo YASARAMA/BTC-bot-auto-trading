@@ -144,3 +144,54 @@ def test_risk_state_roundtrip():
     assert "events" not in d
     assert RiskState.from_dict(d) == RiskState(**{k: v for k, v in d.items()})
     assert RiskState.from_dict({"day": "d", "unknown_future_field": 1}).day == "d"
+
+
+def test_an_entry_without_a_stop_is_refused_unless_it_is_asked_for(tmp_path):
+    """Every strategy must set a stop, because position size comes from the distance to
+    it. The benchmark is the one exception, and it has to be turned on deliberately."""
+    signal = Signal(Action.BUY, 1.0, "no stop", stop_loss=None)
+
+    strict = rm(tmp_path)
+    decision = strict.evaluate(signal, acct(), candle_ts=NOW)
+    assert isinstance(decision, Rejection) and decision.code == "bad_stop"
+    assert "allow_entry_without_stop" in decision.reason
+
+    loose = rm(tmp_path, allow_entry_without_stop=True, max_position_pct=100.0)
+    intent = loose.evaluate(signal, acct(), candle_ts=NOW)
+    assert isinstance(intent, OrderIntent)
+    assert intent.stop_loss is None, "no stop was asked for and none is invented"
+    assert 0 < intent.qty * intent.ref_price <= 10_000.0, "sized by the position cap alone"
+
+
+def test_sizing_leaves_room_for_fees_and_slippage(tmp_path):
+    """A position sized to the whole account must still be payable at the price the
+    exchange actually fills at, or every entry is rejected as unaffordable."""
+    from bot.execution.paper import PaperExchange
+    from bot.models import Side
+
+    risk = rm(tmp_path, max_position_pct=100.0, risk_per_trade_pct=100.0)
+    risk.slippage = 0.0005  # 5 bps, the default paper slippage
+    intent = risk.evaluate(buy(stop=PRICE / 2), acct(), candle_ts=NOW)
+    assert isinstance(intent, OrderIntent)
+
+    exchange = PaperExchange(symbol="BTC/USDT", fee_rate=0.001, slippage_bps=5.0, initial_cash=10_000.0,
+                             clock=lambda: NOW)
+    exchange.set_price(PRICE)
+    order = exchange.create_market_order("BTC/USDT", Side.BUY, intent.qty, "cid-allin")
+    assert order.status == "closed" and order.filled > 0, order.reason
+
+
+def test_the_benchmark_actually_holds_the_market():
+    """buy_hold exists to answer "what if I had just bought and held", so a backtest of it
+    has to end within a fee of the buy-and-hold number, not at zero."""
+    from bot.backtest.engine import run_backtest
+    from bot.config import load_config
+    from bot.data.history import load_csv
+
+    cfg = load_config("config.yaml")
+    df = load_csv("data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv")
+    result = run_backtest(df, cfg, strategy_name="buy_hold", params={})
+    m = result.metrics
+    assert m["trades"] == 1, "one entry, one exit at the end of the data"
+    assert m["total_return_pct"] == pytest.approx(m["buy_hold_return_pct"], rel=0.02)
+    assert m["max_drawdown_pct"] < -5, "holding through a bear leg is not free"

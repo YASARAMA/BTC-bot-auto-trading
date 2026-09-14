@@ -59,7 +59,15 @@ def run_backtest(
     )
     store = StateStore(":memory:")
     risk_cfg = cfg.risk.model_copy(update={"kill_switch_file": ""})  # a stray file must not alter a backtest
-    risk = RiskManager(risk_cfg, fee_rate=cfg.exchange.fee_rate)
+    if name == "buy_hold":
+        # The benchmark is not a risk-managed strategy: it is the answer to "what if I had
+        # just bought and held", so it uses the whole account and needs no stop. Sizing it
+        # by risk-per-trade would compare the strategy against a token position instead.
+        risk_cfg = risk_cfg.model_copy(update={
+            "allow_entry_without_stop": True, "max_position_pct": 100.0,
+            "min_seconds_between_trades": 0.0, "min_confidence": 0.0,
+        })
+    risk = RiskManager(risk_cfg, fee_rate=cfg.exchange.fee_rate, slippage_bps=cfg.exchange.slippage_bps)
     executor = OrderExecutor(
         exchange, store, symbol=symbol, strategy_name=strategy.name,
         order_timeout_seconds=cfg.exchange.order_timeout_seconds, order_poll_seconds=0.0,

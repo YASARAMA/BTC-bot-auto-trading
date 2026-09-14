@@ -26,6 +26,13 @@ Every entry is one released build. The app shows the newest entry after it updat
   instead of crossing the spread, paying the lower maker fee and no slippage. The catch is
   modelled honestly: an order the market never reaches does not fill, and that trade is
   missed. Exits always stay market orders, because an exit has to happen.
+- **Fixed: the buy-and-hold benchmark never traded.** Position size comes from the distance
+  to the stop, and the benchmark has no stop, so every one of its entries was refused and
+  it reported a flat 0%. It now holds the market properly (182% against a theoretical 183%
+  on the sample, with the 29% drawdown that holding really cost).
+- **Fixed: a position sized to the whole account was unaffordable.** Sizing ignored
+  slippage, so at a 100% position cap the exchange rejected the order for being a few
+  dollars over the balance. Invisible at the default 25% cap, fatal at 100%.
 - **Fixed: a manual order during a candle could fail or lose data.** The trading loop and
   the UI share one database connection, and using it from both at once made SQLite raise -
   the UI showed a 500, and orders, trades or equity rows could silently go unwritten. Every
