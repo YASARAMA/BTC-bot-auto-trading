@@ -16,12 +16,12 @@ unattended.
 | Module | Responsibility |
 | --- | --- |
 | `bot/data/` | Rolling window of **closed** candles, gap backfill, retries with backoff; historical download with a CSV cache |
-| `bot/strategy/` | `Strategy` base class (`on_candle(df) -> Signal`), indicators (EMA, RSI, ATR), reference `ema_rsi` strategy |
+| `bot/strategy/` | `Strategy` base class (`on_candle(df) -> Signal`), indicators (EMA, RSI, ATR, Donchian, Bollinger, ADX), six strategies including a regime switch and a buy-and-hold benchmark |
 | `bot/risk/` | `RiskManager`: fixed-fractional sizing, max position, daily-loss halt, loss-streak cooldown, min interval, kill switch |
-| `bot/execution/` | `PaperExchange` (simulated fills with fees and slippage), `LiveExchange` (ccxt), idempotent order ids, `OrderExecutor` |
+| `bot/execution/` | `PaperExchange` (simulated market and resting limit fills, fees, slippage), `LiveExchange` (ccxt), idempotent order ids, `OrderExecutor` |
 | `bot/state/` | SQLite: orders, trades, equity curve, key/value bot state |
 | `bot/engine.py` | `TradingEngine`: candle → strategy → risk → execution → position bookkeeping; startup reconciliation |
-| `bot/backtest/` | Runs the *same* engine, risk manager and paper exchange over historical candles; metrics report |
+| `bot/backtest/` | Runs the *same* engine, risk manager and paper exchange over historical candles; metrics, parameter search, walk-forward, robustness |
 | `bot/notify/` | Telegram / Discord notifications for fills, halts and errors (silent when not configured) |
 | `bot/main.py` | The unattended loop: one structured JSON log line per cycle, never dies on a single failure |
 | `bot/ui/` | Local web dashboard and the desktop entry point (`python -m bot.ui`, `BTCBot.exe`) |
@@ -175,6 +175,23 @@ On the shipped sample data the reference strategy fails that test: it is roughly
 of sample while buying and holding made far more. That is the answer the tool exists to
 give you.
 
+**Robustness** asks the two questions a single result cannot answer:
+
+```bash
+python -m bot.backtest.robustness --csv data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv
+```
+
+*Would this have worked in a different order?* The trades are re-dealt thousands of times
+(bootstrap with replacement, or the same trades reshuffled) and the report gives the median
+outcome, the bad fifth, the worst drawdown you should expect, how often the account ended
+down, and how often it lost half its value. A strategy that loses in 40% of orderings is a
+coin flip with extra steps, whatever its single backtest said.
+
+*Does it survive a nudge?* Each parameter is swept one at a time. If the profit only exists
+at one exact value — a **spike** — that value was chosen for this history and will not
+repeat. A wide, boring **plateau** is what a real edge looks like, and the middle of one is
+a better setting than the peak.
+
 Backtests run about nine times faster than before because indicators are computed once per
 run rather than once per candle; the values are identical (there is a test for that).
 
@@ -297,7 +314,9 @@ position. The important knobs:
 | Key | Meaning |
 | --- | --- |
 | `exchange.id`, `symbol`, `timeframe` | Any ccxt spot exchange; symbol as `BASE/QUOTE` |
-| `exchange.fee_rate`, `slippage_bps` | Costs applied to paper fills and backtests |
+| `exchange.fee_rate`, `maker_fee_rate`, `slippage_bps` | Costs applied to paper fills and backtests |
+| `exchange.order_type` | `market` (always fills, taker fee) or `limit` (posts away from the price, maker fee, may miss) |
+| `exchange.limit_offset_bps`, `limit_fallback_market` | How far a limit order is posted, and whether a miss falls back to a market order |
 | `risk.risk_per_trade_pct` | Equity at risk between entry and stop (fixed-fractional sizing) |
 | `risk.max_position_pct` | Cap on position notional as % of equity |
 | `risk.max_daily_loss_pct` | Equity down this much from the UTC day's start → no new entries until the next UTC day |
@@ -322,18 +341,51 @@ Secrets never go in `config.yaml`. See [`.env.example`](.env.example):
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL` | Optional notifications |
 | `BOT_CONFIG` | Alternative config path |
 
-## The reference strategy: `ema_rsi`
+## Strategies
 
-- **BUY** when the fast EMA crosses above the slow EMA on a closed candle and RSI is within
-  `[rsi_buy_min, rsi_buy_max]` (momentum present, not overbought).
-- **SELL** when the fast EMA crosses below the slow EMA.
-- **Stop loss** at `close - atr_stop_mult * ATR`, **take profit** at `close + atr_tp_mult * ATR`.
-- Confidence starts at `confidence_base` and gains `confidence_per_confirmation` for each of:
-  slow EMA rising over `trend_lookback` candles, RSI above `rsi_midline`.
+| Name | What it buys | Where it fails |
+| --- | --- | --- |
+| `ema_rsi` | The fast EMA crossing above the slow one while RSI sits in `[rsi_buy_min, rsi_buy_max]` | Choppy markets: it crosses back and forth |
+| `breakout` | A close above the highest high of the last `entry_period` candles; exits below the `exit_period` low | Ranges: every false break is a small loss |
+| `mean_reversion` | A close below the lower Bollinger band with RSI oversold, but only while the long EMA is rising | Sustained downtrends: every dip keeps dipping |
+| `regime` | Whichever of the two above suits the market, chosen by ADX | Whipsaw regimes, where ADX flips around the thresholds |
+| `buy_hold` | Once, at the start | Nothing — that is the point: it is the benchmark to beat |
+| `ai` | What Claude decides from the same indicators, with a technical fallback | Costs money per candle and is no more clairvoyant than its prompt |
+
+The two new rule-based strategies fail in exactly each other's conditions, which is what
+makes `regime` worth having: ADX at or above `trend_above` means trend (breakout takes it),
+at or below `range_below` means range (mean reversion takes it), and in between it does
+nothing. Whichever half opens a position keeps managing its exit, even if the regime flips.
+
+Two details worth knowing, because they are easy to get wrong:
+
+- The Donchian channel excludes the current candle. Otherwise the candle's own high defines
+  the level it is supposed to break, and the strategy "breaks out" every single candle.
+- `mean_reversion`'s trend filter requires the long EMA to be **rising**, not price to be
+  above it. A dip is below the average by definition, so the usual filter would block every
+  entry it exists to allow.
 
 Add a strategy by subclassing `bot.strategy.base.Strategy`, implementing `warmup` and
 `on_candle`, and registering it in `bot/strategy/__init__.py`. Strategies must be pure:
-same candles in, same signal out.
+same candles in, same signal out. Parameters left over from a strategy you switched away
+from are dropped with a warning rather than stopping the bot.
+
+## Market or maker orders
+
+| `exchange.order_type` | What happens | The cost |
+| --- | --- | --- |
+| `market` (default) | Crosses the spread immediately | Always the taker fee, plus slippage |
+| `limit` | Posts `limit_offset_bps` below the price to buy (above to sell) | The lower maker fee, but the trade may never happen |
+
+A maker order only fills if the market comes to it. The backtester models that honestly: a
+limit order rests through the next candle and fills only if that candle's range reaches it,
+at the limit price with no slippage. Entries that never fill are simply missed — which is
+the real cost of saving the fee, and the reason a backtest that assumed every limit filled
+would be worthless. Set `limit_fallback_market: true` to cross the spread instead of
+skipping a missed entry.
+
+Exits are always market orders. A stop, a take profit, or a sell signal has to happen;
+posting one and hoping the price comes back is how a small loss becomes a large one.
 
 ## Backtesting
 
@@ -431,12 +483,13 @@ mode. No test touches the network.
 
 ```
 bot/
-  main.py            unattended loop            bot/backtest/   engine, metrics, CLI
+  main.py            unattended loop            bot/backtest/   engine, metrics, optimize, robustness
   engine.py          TradingEngine              bot/data/       feed, history
   config.py          pydantic config + secrets  bot/execution/  paper, live, replay, executor, order_id
   models.py          Signal, Position, Order…   bot/notify/     Telegram / Discord
   common.py          time + retry helpers       bot/risk/       RiskManager
   logging_utils.py   JSON logging               bot/state/      SQLite store
-                                                bot/strategy/   base, indicators, ema_rsi
+  modes.py           safe/balanced/aggressive   bot/strategy/   base, indicators, ema_rsi, breakout,
+  reports.py         analytics, CSV exports                     mean_reversion, regime, buy_hold, ai
 config.yaml  .env.example  Dockerfile  docker-compose.yml  data/samples/  tests/
 ```

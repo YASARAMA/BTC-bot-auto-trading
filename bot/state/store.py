@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS orders (
     symbol            TEXT NOT NULL,
     side              TEXT NOT NULL,
     type              TEXT NOT NULL,
+    price             REAL,
     amount            REAL NOT NULL,
     filled            REAL NOT NULL DEFAULT 0,
     avg_price         REAL,
@@ -64,7 +65,18 @@ class StateStore:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a user's database was created.
+
+        CREATE TABLE IF NOT EXISTS leaves an existing table exactly as it was, so a
+        database from an older build keeps its old columns until they are added here.
+        """
+        have = {row["name"] for row in self.conn.execute("PRAGMA table_info(orders)")}
+        if "price" not in have:
+            self.conn.execute("ALTER TABLE orders ADD COLUMN price REAL")
 
     def close(self) -> None:
         self.conn.close()
@@ -73,18 +85,19 @@ class StateStore:
     def save_order(self, order: Order) -> None:
         self.conn.execute(
             """
-            INSERT INTO orders (client_order_id, exchange_order_id, symbol, side, type, amount, filled,
+            INSERT INTO orders (client_order_id, exchange_order_id, symbol, side, type, price, amount, filled,
                                 avg_price, fee, status, candle_ts, kind, reason, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(client_order_id) DO UPDATE SET
                 exchange_order_id = excluded.exchange_order_id,
+                type = excluded.type, price = excluded.price,
                 filled = excluded.filled, avg_price = excluded.avg_price, fee = excluded.fee,
                 status = excluded.status, updated_at = excluded.updated_at
             """,
             (
                 order.client_order_id, order.exchange_order_id, order.symbol, order.side.value, order.type,
-                order.amount, order.filled, order.avg_price, order.fee, order.status, order.candle_ts,
-                order.kind, order.reason, order.created_at, order.updated_at,
+                order.price, order.amount, order.filled, order.avg_price, order.fee, order.status,
+                order.candle_ts, order.kind, order.reason, order.created_at, order.updated_at,
             ),
         )
         self.conn.commit()
@@ -109,6 +122,7 @@ class StateStore:
             symbol=row["symbol"],
             side=Side(row["side"]),
             type=row["type"],
+            price=row["price"] if "price" in row.keys() else None,
             amount=row["amount"],
             filled=row["filled"],
             avg_price=row["avg_price"],

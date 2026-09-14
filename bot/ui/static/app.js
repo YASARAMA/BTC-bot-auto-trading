@@ -527,6 +527,11 @@
     'exchange.live': { label: 'Live trading switch (config)', help: 'real orders also need LIVE_TRADING in the keys panel' },
     'exchange.sandbox': { label: 'Use the exchange testnet', help: 'where ccxt supports it' },
     'exchange.fee_rate': { label: 'Taker fee (fraction)' }, 'exchange.slippage_bps': { label: 'Simulated slippage (bps)' },
+    'exchange.maker_fee_rate': { label: 'Maker fee (fraction)', help: 'charged when a posted order fills' },
+    'exchange.order_type': { label: 'How orders are placed', type: 'select', options: ['market', 'limit'],
+      help: 'market always fills and pays the taker fee · limit posts away from the price, pays the maker fee, and may miss the trade' },
+    'exchange.limit_offset_bps': { label: 'Post this far from the price (bps)', help: 'below to buy, above to sell' },
+    'exchange.limit_fallback_market': { label: 'Take the trade anyway if the limit order misses', help: 'crosses the spread and pays the taker fee' },
     'exchange.candle_history': { label: 'Candles kept for indicators' }, 'exchange.poll_interval_seconds': { label: 'Poll interval (s)' },
     'exchange.candle_close_grace_seconds': { label: 'Wait after candle close (s)' }, 'exchange.order_timeout_seconds': { label: 'Order timeout (s)' },
     'exchange.order_poll_seconds': { label: 'Order status poll (s)' }, 'exchange.max_retries': { label: 'Network retries' },
@@ -1012,6 +1017,48 @@
     st.textContent = `done · ${r.candles.toLocaleString()} candles from ${r.source}`;
     $('rs-result').classList.remove('hidden');
     const head = $('rs-table').querySelector('thead'), body = $('rs-table').querySelector('tbody');
+    const second = $('rs-verdict2');
+    second.classList.add('hidden');
+    if (r.mode === 'robustness') {
+      const mc = r.monte_carlo, sn = r.sensitivity, ret = mc.returns_pct, dd = mc.drawdowns_pct;
+      const v = $('rs-verdict');
+      v.textContent = mc.verdict;
+      v.className = `confirm-box ${mc.prob_ruin_pct >= 5 || mc.prob_loss_pct >= 40 ? 'bad' : mc.prob_loss_pct >= 20 || ret.median <= 0 ? 'mixed' : 'good'}`;
+      second.textContent = sn.verdict;
+      second.className = `confirm-box ${sn.verdict.startsWith('Fitted') || sn.verdict.startsWith('No setting') ? 'mixed' : 'good'}`;
+      second.classList.remove('hidden');
+      $('rs-tiles').innerHTML = [
+        ['This backtest', fmt.pct(mc.actual_return_pct), cls(mc.actual_return_pct)],
+        ['Median re-deal', fmt.pct(ret.median), cls(ret.median)],
+        ['Bad fifth', fmt.pct(ret.p05), cls(ret.p05)],
+        ['Good fifth', fmt.pct(ret.p95), cls(ret.p95)],
+        ['Worst re-deal', fmt.pct(ret.worst), 'neg'],
+        ['Ended down', `${mc.prob_loss_pct}%`, mc.prob_loss_pct >= 40 ? 'neg' : ''],
+        ['Lost half', `${mc.prob_ruin_pct}%`, mc.prob_ruin_pct > 0 ? 'neg' : ''],
+        ['Typical drawdown', `${dd.median}%`, 'neg'],
+        ['Worst drawdown', `${dd.worst}%`, 'neg'],
+        ['Trades', mc.trades, ''],
+      ].map(([l, val, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}">${val}</div></div>`).join('');
+      // The spread of re-dealt outcomes, cheapest useful picture: sorted final returns.
+      drawLine($('rs-chart'), [[5, ret.p05], [25, ret.p25], [50, ret.median], [75, ret.p75], [95, ret.p95]]
+        .map(([x, y]) => ({ x, y })), { empty: 'no re-deals' });
+      head.innerHTML = '<tr><th>Setting</th><th>Now</th><th>Best here</th><th>Shape</th><th class="num">Drop vs neighbours</th><th>Tried</th></tr>';
+      body.innerHTML = (sn.sweeps || []).map((sw) => {
+        const badge = sw.shape === 'spike' ? 'neg' : sw.shape === 'plateau' ? 'pos' : 'muted';
+        const tried = sw.values.map((val, i) => {
+          const sc = sw.scores[i];
+          return `<span class="${sc === null ? 'muted' : ''}">${val}${sc === null ? '' : `:${sc}`}</span>`;
+        }).join(' · ');
+        return `<tr><td>${sw.param}</td><td class="muted">${sw.baseline_value === null || sw.baseline_value === undefined ? 'default' : sw.baseline_value}</td>`
+          + `<td>${sw.best_value === null ? '—' : sw.best_value}${sw.at_edge ? ' <span class="muted small">(edge)</span>' : ''}</td>`
+          + `<td class="${badge}">${sw.shape}</td><td class="num">${sw.neighbour_drop_pct === null ? '—' : `${sw.neighbour_drop_pct}%`}</td>`
+          + `<td class="muted small">${tried}</td></tr>`;
+      }).join('');
+      $('rs-apply-note').textContent = 'Nothing to apply: this test judges the settings you already have.';
+      $('rs-apply').disabled = true;
+      return;
+    }
+    $('rs-apply').disabled = false;
     if (r.mode === 'walk-forward') {
       const m = r.out_of_sample, s = r.stability;
       const v = $('rs-verdict');
@@ -1057,7 +1104,8 @@
   $('rs-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = { csv: $('rs-source').value, mode: $('rs-mode').value, folds: Number($('rs-folds').value),
-                   sample: Number($('rs-sample').value), objective: $('rs-objective').value };
+                   sample: Number($('rs-sample').value), objective: $('rs-objective').value,
+                   runs: 2000, method: 'resample' };
     try { renderResearch(await api('/api/research', body)); } catch (err) { showAlert(err.message); }
   });
   $('rs-apply').addEventListener('click', async () => {

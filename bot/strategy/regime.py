@@ -48,7 +48,7 @@ class RegimeStrategy(Strategy):
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         super().__init__(params)
         self.p = RegimeParams.model_validate(self.raw_params)
-        # Each half rejects the other half\'s parameter names, and a config that has been
+        # Each half rejects the other half's parameter names, and a config that has been
         # switched between strategies often carries both.
         trend_params, dropped_trend = prune_extras(BreakoutParams, self.p.trend_params)
         range_params, dropped_range = prune_extras(MeanReversionParams, self.p.range_params)

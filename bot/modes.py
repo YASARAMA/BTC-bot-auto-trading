@@ -111,7 +111,7 @@ def mode_params_for(mode: str, strategy: str) -> dict[str, Any]:
     """The parameters a mode sets for one strategy.
 
     Every strategy has its own parameter names and rejects unknown ones, so a mode must
-    never push `ema_rsi`\'s settings into, say, the breakout strategy. A strategy the mode
+    never push `ema_rsi`'s settings into, say, the breakout strategy. A strategy the mode
     knows nothing about keeps whatever parameters the user configured.
     """
     preset = MODES[mode]
@@ -133,7 +133,7 @@ def _merge_params(current: dict[str, Any], preset: dict[str, Any]) -> dict[str, 
 
 
 def apply_mode(config: dict[str, Any], mode: str) -> dict[str, Any]:
-    """Return a copy of a config dict with the mode\'s risk and strategy settings applied."""
+    """Return a copy of a config dict with the mode's risk and strategy settings applied."""
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose one of {sorted(MODES)}")
     preset = MODES[mode]

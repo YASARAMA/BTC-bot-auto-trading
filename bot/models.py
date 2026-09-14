@@ -113,6 +113,7 @@ class Order:
     created_at: int
     updated_at: int
     exchange_order_id: str | None = None
+    price: float | None = None  # the limit price; None for market orders
     filled: float = 0.0
     avg_price: float | None = None
     fee: float = 0.0

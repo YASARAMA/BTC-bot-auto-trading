@@ -326,6 +326,7 @@
             <label>Test <select id="rs-mode">
               <option value="walk-forward" selected>Walk-forward (honest, slower)</option>
               <option value="grid">Parameter search only (in-sample)</option>
+              <option value="robustness">Robustness: re-deal the trades &amp; nudge the settings</option>
             </select></label>
             <label>Blocks <input type="number" id="rs-folds" min="2" max="10" value="4"></label>
             <label>Combinations to try <input type="number" id="rs-sample" min="4" max="500" value="60"></label>
@@ -343,6 +344,7 @@
         <div id="rs-result" class="hidden">
           <div class="confirm-box" id="rs-verdict" style="margin:14px 0"></div>
           <div class="tiles compact" id="rs-tiles"></div>
+          <div class="confirm-box hidden" id="rs-verdict2" style="margin:0 0 14px"></div>
           <canvas id="rs-chart" height="200"></canvas>
           <div class="table-wrap" style="margin-top:12px">
             <table class="data" id="rs-table"><thead></thead><tbody></tbody></table>
@@ -369,6 +371,16 @@
             </div>
             <div class="row"><button class="primary" id="dl-run">Download</button><span class="muted small" id="dl-status"></span></div>
           </form>
+        </div>
+        <div class="card">
+          <div class="card-title">What robustness answers</div>
+          <p class="muted small">A backtest is one deal of the cards. <strong>Re-dealing</strong> the same trades
+            thousands of times shows the spread you should actually expect: the median, the bad fifth, and how often
+            the account would have ended down. A strategy that loses in 40% of orderings is a coin flip with extra
+            steps.</p>
+          <p class="muted small">The sweep changes one setting at a time. If profit only exists at one exact value
+            (a <em>spike</em>), that value was picked for the past. A wide, boring <em>plateau</em> is what a real
+            edge looks like — always prefer the middle of one.</p>
         </div>
         <div class="card">
           <div class="card-title">How to read the verdict</div>

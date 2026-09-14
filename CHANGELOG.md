@@ -12,10 +12,20 @@ Every entry is one released build. The app shows the newest entry after it updat
 - **A benchmark to beat.** The `buy_hold` strategy buys once and holds, so every backtest
   and walk-forward run can be compared against doing nothing at all.
 - **Modes cover every strategy.** Safe, Balanced and Aggressive now carry their own
-  settings for each strategy instead of pushing `ema_rsi`\'s parameters into all of them.
+  settings for each strategy instead of pushing `ema_rsi`'s parameters into all of them.
 - **The search knows each strategy.** The Research tab searches the parameters of the
   strategy you actually selected, and refuses to grid-search the AI strategy (it would
   call the API once per candle, per combination, and cost real money).
+- **Is the result real? Robustness testing.** A third mode in the Research tab re-deals the
+  same trades thousands of times and reports the spread you should actually expect: the
+  median outcome, the bad fifth, the typical and the worst drawdown, how often the account
+  ended down, and how often it lost half its value. It then sweeps every setting one at a
+  time and says whether the profit sits on a wide plateau (a real edge) or on a single
+  spike (a number fitted to the past).
+- **Maker orders.** `exchange.order_type: limit` posts entries a little below the price
+  instead of crossing the spread, paying the lower maker fee and no slippage. The catch is
+  modelled honestly: an order the market never reaches does not fill, and that trade is
+  missed. Exits always stay market orders, because an exit has to happen.
 - **Fixed: leftover settings no longer stop the bot.** Switching from the AI strategy back
   to a technical one used to leave `model` and `mode` in config.yaml, and the next Start
   died with "Extra inputs are not permitted". Those settings are now dropped, named in the

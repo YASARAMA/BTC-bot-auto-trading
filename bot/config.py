@@ -33,7 +33,14 @@ class ExchangeConfig(StrictModel):
     timeframe: str = "1h"
     live: bool = False
     fee_rate: float = Field(0.001, ge=0.0, lt=0.1, description="taker fee as a fraction")
+    maker_fee_rate: float = Field(0.001, ge=0.0, lt=0.1, description="maker fee, charged on limit fills")
     slippage_bps: float = Field(5.0, ge=0.0, description="paper/backtest slippage in basis points")
+    order_type: Literal["market", "limit"] = Field(
+        "market", description="market crosses the spread; limit posts and may not fill")
+    limit_offset_bps: float = Field(
+        5.0, ge=0.0, description="how far below (buy) or above (sell) the price a limit order is posted")
+    limit_fallback_market: bool = Field(
+        False, description="cross the spread with a market order when a limit order does not fill")
     candle_history: int = Field(500, ge=50, description="closed candles kept in the rolling window")
     poll_interval_seconds: float = Field(10.0, gt=0.0)
     candle_close_grace_seconds: float = Field(5.0, ge=0.0, description="wait after a close before fetching")

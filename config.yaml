@@ -12,6 +12,11 @@ exchange:
   live: false            # must ALSO have LIVE_TRADING=true in the environment to place real orders
   sandbox: false         # exchange testnet, where ccxt supports it
   fee_rate: 0.001        # taker fee (0.1%) used for paper fills and backtests
+  maker_fee_rate: 0.001  # fee charged when a limit order rests and fills (often lower than the taker fee)
+  order_type: market     # market = always fills, pays the taker fee
+                         # limit  = posts below/above the price, pays the maker fee, may not fill at all
+  limit_offset_bps: 5    # how far away from the price a limit order is posted, basis points
+  limit_fallback_market: false  # cross the spread when a limit order did not fill, instead of skipping the trade
   slippage_bps: 5        # simulated slippage per fill, basis points
   candle_history: 500    # closed candles kept in memory for indicators
   poll_interval_seconds: 10

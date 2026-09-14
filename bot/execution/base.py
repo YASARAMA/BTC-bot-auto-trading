@@ -50,6 +50,16 @@ class ExchangeClient(MarketData):
     ) -> Order:
         ...
 
+    def create_limit_order(
+        self, symbol: str, side: Side, amount: float, price: float, client_order_id: str
+    ) -> Order:
+        """Post a resting order at `price`. Optional: not every client supports it."""
+        raise NotImplementedError(f"{type(self).__name__} cannot place limit orders")
+
+    @property
+    def supports_limit_orders(self) -> bool:
+        return type(self).create_limit_order is not ExchangeClient.create_limit_order
+
     @abstractmethod
     def fetch_order(self, order: Order) -> Order:
         """Refresh an order's status/fill from the exchange."""

@@ -792,6 +792,26 @@ class BotController:
                        "tested": len(ranked), "objective": objective,
                        "note": "These are in-sample numbers: the search saw this whole period. "
                                "Run a walk-forward test before trusting them."}
+            elif mode == "robustness":
+                from bot.backtest.robustness import monte_carlo, sensitivity
+
+                note(done=0, total=2, phase="backtesting the current settings")
+                result = run_backtest(df, self.runtime_cfg(cfg))
+                mc = monte_carlo(result.trades, result.equity,
+                                 method=str(params.get("method") or "resample"),
+                                 runs=int(params.get("runs") or 2000))
+
+                def sens_tick(done: int, total: int) -> None:
+                    note(done=done, total=total, phase="re-running with each setting changed")
+
+                sens = sensitivity(df, self.runtime_cfg(cfg), objective=objective,
+                                   min_trades=max(1, int(params.get("min_trades") or 10) // 2),
+                                   workers=workers, progress=sens_tick)
+                out = {"mode": "robustness", "objective": objective,
+                       "backtest": result.metrics, "monte_carlo": mc.to_dict(),
+                       "sensitivity": sens.to_dict(),
+                       "note": "The re-deal asks what the same trades would have done in another "
+                               "order; the sweep asks whether the settings still work when nudged."}
             else:
                 def wf_tick(phase: str, fold: int, total: int) -> None:
                     note(done=fold, total=total, phase=f"block {fold} of {total}: {phase}")

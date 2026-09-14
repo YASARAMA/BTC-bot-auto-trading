@@ -459,6 +459,30 @@ def test_research_grid_mode_marks_results_as_in_sample(ui):
     assert all("params" in c and "metrics" in c for c in done["top"])
 
 
+def test_research_robustness_mode_returns_both_answers(ui):
+    root, c, server = ui
+    csv = "data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv"
+    code, started = call(server, "/api/research", {"csv": csv, "mode": "robustness", "runs": 200,
+                                                   "min_trades": 2})
+    assert code == 200 and started["state"] == "running"
+    done = wait_for(lambda: (lambda r: r if r["state"] in ("done", "error") else None)(call(server, "/api/research")[1]),
+                    timeout=300)
+    assert done["state"] == "done", done.get("error")
+    assert done["mode"] == "robustness"
+
+    mc = done["monte_carlo"]
+    assert mc["runs"] == 200 and mc["trades"] > 0 and mc["verdict"]
+    assert mc["returns_pct"]["p05"] <= mc["returns_pct"]["median"] <= mc["returns_pct"]["p95"]
+    assert 0.0 <= mc["prob_loss_pct"] <= 100.0
+
+    sens = done["sensitivity"]
+    assert sens["sweeps"] and sens["verdict"]
+    assert all({"param", "values", "scores", "shape"} <= set(sw) for sw in sens["sweeps"])
+    # The payload has to survive JSON with no NaN or Infinity in it.
+    import json
+    json.dumps(done, allow_nan=False)
+
+
 def test_analytics_and_csv_export(ui):
     root, c, server = ui
     # A hand-placed round trip gives the analytics something deterministic to summarise.

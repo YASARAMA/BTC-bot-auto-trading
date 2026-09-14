@@ -80,6 +80,7 @@ def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str |
         market: MarketData = replay
         exchange: ExchangeClient = PaperExchange(
             symbol=cfg.exchange.symbol, fee_rate=cfg.exchange.fee_rate, slippage_bps=cfg.exchange.slippage_bps,
+            maker_fee_rate=cfg.exchange.maker_fee_rate,
             initial_cash=cfg.paper.initial_cash, initial_base=cfg.paper.initial_base, market_data=replay,
             clock=replay.now_ms,
         )
@@ -94,6 +95,7 @@ def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str |
             market = public
             exchange = PaperExchange(
                 symbol=cfg.exchange.symbol, fee_rate=cfg.exchange.fee_rate, slippage_bps=cfg.exchange.slippage_bps,
+                maker_fee_rate=cfg.exchange.maker_fee_rate,
                 initial_cash=cfg.paper.initial_cash, initial_base=cfg.paper.initial_base, market_data=public,
             )
 
@@ -108,6 +110,8 @@ def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str |
         exchange, store, symbol=cfg.exchange.symbol, strategy_name=strategy.name,
         order_timeout_seconds=cfg.exchange.order_timeout_seconds, order_poll_seconds=cfg.exchange.order_poll_seconds,
         sleep=(lambda _s: None) if replay else time.sleep, clock=clock,
+        order_type=cfg.exchange.order_type, limit_offset_bps=cfg.exchange.limit_offset_bps,
+        limit_fallback_market=cfg.exchange.limit_fallback_market,
     )
     engine = TradingEngine(cfg=cfg, strategy=strategy, risk=risk, exchange=exchange, executor=executor,
                            store=store, notifier=notifier, clock=clock, mode=mode)

@@ -55,7 +55,7 @@ def run_backtest(
     clock = {"now": int(df["ts"].iloc[0])}
     exchange = PaperExchange(
         symbol=symbol, fee_rate=cfg.exchange.fee_rate, slippage_bps=cfg.exchange.slippage_bps,
-        initial_cash=cash, clock=lambda: clock["now"],
+        maker_fee_rate=cfg.exchange.maker_fee_rate, initial_cash=cash, clock=lambda: clock["now"],
     )
     store = StateStore(":memory:")
     risk_cfg = cfg.risk.model_copy(update={"kill_switch_file": ""})  # a stray file must not alter a backtest
@@ -64,6 +64,9 @@ def run_backtest(
         exchange, store, symbol=symbol, strategy_name=strategy.name,
         order_timeout_seconds=cfg.exchange.order_timeout_seconds, order_poll_seconds=0.0,
         sleep=lambda _s: None, clock=lambda: clock["now"], quiet=True,
+        order_type=cfg.exchange.order_type, limit_offset_bps=cfg.exchange.limit_offset_bps,
+        limit_fallback_market=cfg.exchange.limit_fallback_market,
+        wait_for_fill=False,  # the candle the order is placed in already decides its fate
     )
     engine = TradingEngine(
         cfg=cfg, strategy=strategy, risk=risk, exchange=exchange, executor=executor, store=store,
@@ -82,6 +85,12 @@ def run_backtest(
         clock["now"] = int(row["ts"]) + tf_ms
         next_open = float(df["open"].iloc[i + 1]) if i + 1 < n else float(row["close"])
         exchange.set_price(next_open)
+        # A limit order placed on this signal rests through the next candle: it fills only
+        # if that candle's range reaches it, and is cancelled otherwise.
+        if i + 1 < n:
+            exchange.set_fill_window(float(df["high"].iloc[i + 1]), float(df["low"].iloc[i + 1]))
+        else:
+            exchange.set_fill_window(None, None)
         frame = df.iloc[max(0, i - window + 1) : i + 1]
         engine.process_candle(frame, fill_price=next_open, exit_at_level=True)
 

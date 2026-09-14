@@ -63,7 +63,7 @@ def drop_path(params: dict[str, Any], path: tuple[Any, ...]) -> bool:
 def prune_extras(model: type[BaseModel], params: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
     """Drop the settings this parameter model does not recognise, and name them.
 
-    Switching strategy leaves the previous one\'s parameters behind in config.yaml, and
+    Switching strategy leaves the previous one's parameters behind in config.yaml, and
     every parameter model rejects names it does not know. Dropping them beats refusing to
     start. Errors that are not about unknown names (a period of -5, a string where a
     number belongs) are left untouched, so a genuinely broken setting still raises.

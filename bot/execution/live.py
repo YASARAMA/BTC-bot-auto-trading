@@ -124,6 +124,22 @@ class LiveExchange(ExchangeClient):
         )
         return self.parse_order(raw, client_order_id=client_order_id, fallback_amount=amt, fallback_side=side)
 
+    def create_limit_order(
+        self, symbol: str, side: Side, amount: float, price: float, client_order_id: str
+    ) -> Order:
+        self._ensure_markets()
+        amt = float(self.client.amount_to_precision(symbol, amount))
+        px = float(self.client.price_to_precision(symbol, price))
+        params = {"clientOrderId": client_order_id}
+        raw = self._call(
+            "create_order",
+            lambda: self.client.create_order(symbol, "limit", side.value, amt, px, params),
+        )
+        parsed = self.parse_order(raw, client_order_id=client_order_id, fallback_amount=amt, fallback_side=side)
+        if parsed.price is None:
+            parsed.price = px
+        return parsed
+
     def fetch_order(self, order: Order) -> Order:
         self._ensure_markets()
         if order.exchange_order_id:
@@ -165,7 +181,9 @@ class LiveExchange(ExchangeClient):
         status = status_map.get(raw_status, "open")
         filled = float(raw.get("filled") or 0.0)
         amount = float(raw.get("amount") or fallback_amount or 0.0)
-        avg = raw.get("average") or raw.get("price")
+        # Only a fill has an average price. A resting limit order reports its limit under
+        # "price", which must not be mistaken for a price it traded at.
+        avg = raw.get("average")
         side = Side(raw["side"]) if raw.get("side") else (fallback_side or Side.BUY)
         symbol = raw.get("symbol") or self.cfg.symbol
         quote = symbol.split("/")[1].split(":")[0] if "/" in symbol else self.cfg.quote
@@ -188,12 +206,15 @@ class LiveExchange(ExchangeClient):
         last = int(raw.get("lastTradeTimestamp") or ts)
         if status == "closed" and amount > 0 and filled == 0.0 and raw_status == "closed":
             filled = amount  # some venues omit filled on closed market orders
+        if avg is None and filled > 0:
+            avg = raw.get("price")  # ...and some report only "price" on a filled order
         return Order(
             client_order_id=str(raw.get("clientOrderId") or client_order_id or raw.get("id")),
             exchange_order_id=str(raw.get("id")) if raw.get("id") is not None else None,
             symbol=symbol,
             side=side,
             type=str(raw.get("type") or "market"),
+            price=float(raw["price"]) if raw.get("price") else None,
             amount=amount,
             filled=filled,
             avg_price=float(avg) if avg else None,
