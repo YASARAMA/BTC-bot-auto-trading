@@ -2,6 +2,29 @@
 
 Every entry is one released build. The app shows the newest entry after it updates itself.
 
+## 0.8.0
+
+- **Three new strategies.** `breakout` buys when price clears the high of the last N
+  candles and leaves when it loses the recent low; `mean_reversion` buys sharp dips below
+  the lower Bollinger band while the longer trend is still rising; `regime` measures how
+  strongly the market is trending (ADX) and hands each trade to whichever of the two fits
+  the current market, keeping the half that opened a position in charge of its exit.
+- **A benchmark to beat.** The `buy_hold` strategy buys once and holds, so every backtest
+  and walk-forward run can be compared against doing nothing at all.
+- **Modes cover every strategy.** Safe, Balanced and Aggressive now carry their own
+  settings for each strategy instead of pushing `ema_rsi`\'s parameters into all of them.
+- **The search knows each strategy.** The Research tab searches the parameters of the
+  strategy you actually selected, and refuses to grid-search the AI strategy (it would
+  call the API once per candle, per combination, and cost real money).
+- **Fixed: leftover settings no longer stop the bot.** Switching from the AI strategy back
+  to a technical one used to leave `model` and `mode` in config.yaml, and the next Start
+  died with "Extra inputs are not permitted". Those settings are now dropped, named in the
+  log and removed from the file when you save Settings.
+- **Fixed: updating over a locked BTCBot.old.exe.** If the previous executable was still
+  held by Windows, the update failed with "[WinError 5] Access is denied". The old build is
+  now parked under a free name, a half-finished swap is rolled back, and leftovers are
+  cleaned up on the next start.
+
 ## 0.7.0
 
 - **Parameter search and walk-forward testing.** A Research tab that tries hundreds of

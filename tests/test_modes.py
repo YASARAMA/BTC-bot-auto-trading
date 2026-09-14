@@ -42,3 +42,35 @@ def test_hand_edited_config_detects_as_no_mode():
     assert [m["id"] for m in mode_list()] == ["safe", "balanced", "aggressive"]
     with pytest.raises(ValueError):
         apply_mode(base, "yolo")
+
+
+def test_every_mode_fits_every_strategy():
+    """A mode must never push one strategy's parameter names into another: the models
+    reject unknown keys, so that would stop the bot at startup."""
+    from bot.config import load_config
+    from bot.strategy import STRATEGIES, get_strategy
+
+    base = load_config("config.yaml").printable()
+    for name in STRATEGIES:
+        for mode in MODES:
+            out = apply_mode({**base, "strategy": {"name": name, "params": {}}}, mode)
+            cfg = BotConfig.model_validate(out)
+            strategy = get_strategy(name, cfg.strategy.params)
+            assert strategy.warmup <= cfg.exchange.candle_history, (
+                f"{name} in {mode} mode needs more history than the default window")
+
+
+def test_mode_keeps_parameters_it_does_not_define():
+    from bot.config import load_config
+    from bot.modes import mode_params_for
+
+    base = load_config("config.yaml").printable()
+    out = apply_mode({**base, "strategy": {"name": "breakout", "params": {"warmup_factor": 4}}}, "safe")
+    params = out["strategy"]["params"]
+    assert params["warmup_factor"] == 4, "a setting the mode says nothing about must survive"
+    assert params["entry_period"] == mode_params_for("safe", "breakout")["entry_period"]
+    # Nested groups merge rather than replace wholesale.
+    nested = apply_mode({**base, "strategy": {"name": "regime",
+                                              "params": {"trend_params": {"warmup_factor": 3}}}}, "balanced")
+    trend = nested["strategy"]["params"]["trend_params"]
+    assert trend["warmup_factor"] == 3 and trend["entry_period"] == 20

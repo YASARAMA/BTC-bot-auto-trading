@@ -121,3 +121,68 @@ def test_install_refused_when_not_frozen_or_not_newer(tmp_path):
     u2, *_ = make_updater(tmp_path, current="v9.0.0", data=release())
     with pytest.raises(RuntimeError, match="no newer"):
         u2.install()
+
+
+def test_install_works_when_the_previous_old_exe_is_locked(tmp_path, monkeypatch):
+    """Windows refuses to delete an .old.exe whose process has not fully exited
+    ([WinError 5] Access is denied). The update must park the file under another name
+    instead of failing."""
+    new = b"NEW-EXE-BYTES"
+    files = {"BTCBot.exe": new,
+             "SHA256SUMS.txt": f"{hashlib.sha256(new).hexdigest()}  BTCBot.exe\n".encode()}
+    u, exe, _, restarted = make_updater(tmp_path, data=release(names=("BTCBot.exe",)), files=files)
+    locked = tmp_path / "BTCBot.old.exe"
+    locked.write_bytes(b"STILL-RUNNING")
+
+    real_unlink = Path.unlink
+
+    def refuse_locked(self, *args, **kwargs):
+        if self.name == "BTCBot.old.exe":
+            raise PermissionError(5, "Access is denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_locked)
+    out = u.install()
+
+    assert out["installed"] and exe.read_bytes() == new and restarted == [exe]
+    assert locked.read_bytes() == b"STILL-RUNNING", "the locked file must be left untouched"
+    parked = [p for p in tmp_path.glob("BTCBot.old-*.exe")]
+    assert len(parked) == 1 and parked[0].read_bytes() == b"OLD-EXE"
+    # cleanup_old sweeps both naming schemes and survives a file it still cannot delete.
+    u.cleanup_old()
+    assert not parked[0].exists() and locked.exists()
+
+
+def test_install_restores_the_old_exe_when_the_swap_fails(tmp_path, monkeypatch):
+    files = {"BTCBot.exe": b"A", "BTCBot-console.exe": b"B",
+             "SHA256SUMS.txt": (f"{hashlib.sha256(b'A').hexdigest()}  BTCBot.exe\n"
+                                f"{hashlib.sha256(b'B').hexdigest()}  BTCBot-console.exe\n").encode()}
+    u, exe, _, restarted = make_updater(tmp_path, data=release(), files=files)
+    console = tmp_path / "BTCBot-console.exe"
+    console.write_bytes(b"old-console")
+
+    real_replace = Path.replace
+
+    def fail_on_console(self, target, *args, **kwargs):
+        if Path(target).name == "BTCBot-console.exe":
+            raise PermissionError(5, "Access is denied")
+        return real_replace(self, target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", fail_on_console)
+    with pytest.raises(PermissionError):
+        u.install()
+
+    assert restarted == [] and u.state == "error"
+    assert exe.exists() and console.exists(), "both executables must survive a failed swap"
+    assert console.read_bytes() == b"old-console"
+
+
+def test_retire_gives_up_with_a_readable_message(tmp_path, monkeypatch):
+    from bot.ui.updater import _retire
+
+    target = tmp_path / "BTCBot.exe"
+    target.write_bytes(b"OLD")
+    monkeypatch.setattr(Path, "rename", lambda self, other: (_ for _ in ()).throw(PermissionError(5, "denied")))
+    with pytest.raises(RuntimeError, match="Close any other running copy"):
+        _retire(target, attempts=2, wait=0.0)
+    assert target.exists()

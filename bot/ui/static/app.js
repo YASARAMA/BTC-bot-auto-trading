@@ -531,7 +531,19 @@
     'exchange.candle_close_grace_seconds': { label: 'Wait after candle close (s)' }, 'exchange.order_timeout_seconds': { label: 'Order timeout (s)' },
     'exchange.order_poll_seconds': { label: 'Order status poll (s)' }, 'exchange.max_retries': { label: 'Network retries' },
     'exchange.backoff_base_seconds': { label: 'Retry backoff base (s)' }, 'exchange.backoff_max_seconds': { label: 'Retry backoff max (s)' },
-    'strategy.name': { label: 'Strategy', type: 'select', meta: 'strategies', help: 'ai = Claude decides, ema_rsi = technical rules' },
+    'strategy.name': { label: 'Strategy', type: 'select', meta: 'strategies', help: 'ema_rsi/breakout/mean_reversion = rules, regime = switches between the last two, ai = Claude decides, buy_hold = benchmark' },
+    'strategy.params.entry_period': { label: 'Breakout: buy above the high of N candles' },
+    'strategy.params.exit_period': { label: 'Breakout: sell below the low of N candles' },
+    'strategy.params.min_breakout_atr': { label: 'Breakout: minimum break size (× ATR)', help: '0 = accept any break' },
+    'strategy.params.bb_period': { label: 'Bollinger period' }, 'strategy.params.bb_std': { label: 'Bollinger width (standard deviations)' },
+    'strategy.params.exit_band': { label: 'Mean reversion: close at which band', type: 'select', options: ['middle', 'upper'] },
+    'strategy.params.trend_slope_lookback': { label: 'Trend must have risen over (candles)' },
+    'strategy.params.max_stretch_atr': { label: 'Skip dips deeper than (× ATR below the band)', help: '0 = off' },
+    'strategy.params.adx_period': { label: 'ADX period (regime strength)' },
+    'strategy.params.trend_above': { label: 'ADX above this = trend (use breakout)' },
+    'strategy.params.range_below': { label: 'ADX below this = range (use mean reversion)' },
+    'strategy.params.stop_loss_pct': { label: 'Benchmark stop loss (%)', help: '0 = hold through everything' },
+    'strategy.params.warmup': { label: 'Candles to wait before buying' },
     'strategy.params.model': { label: 'Claude model' }, 'strategy.params.effort': { label: 'Thinking effort', type: 'select', options: ['low', 'medium', 'high', 'xhigh', 'max'] },
     'strategy.params.mode': { label: 'AI risk posture', type: 'select', options: ['safe', 'balanced', 'aggressive'] },
     'strategy.params.max_stop_atr': { label: 'Widest stop the AI may ask for (× ATR)' },
@@ -553,7 +565,7 @@
     'exits.breakeven_after_atr': { label: 'Move stop to breakeven after (× ATR)', help: '0 = off' },
     'exits.partial_take_fraction': { label: 'Partial take profit: fraction to sell', help: '0 = off, 0.5 = half' },
     'exits.partial_take_atr': { label: 'Partial take profit at (× ATR)' },
-    'strategy.params.trend_filter_period': { label: 'Trend filter EMA period', help: 'only buy above it; 0 = off' },
+    'strategy.params.trend_filter_period': { label: 'Trend filter EMA period', help: 'breakout: only buy above it · mean reversion: only buy while it rises · 0 = off' },
     'notify.telegram_commands': { label: 'Obey Telegram commands from your chat' },
     'notify.watchdog_minutes': { label: 'Alert if no cycle for (minutes)', help: '0 = off' },
     'notify.daily_report_hour_utc': { label: 'Daily report hour (UTC)', help: '-1 = off' },
@@ -569,7 +581,10 @@
       const [title, sub] = SECTION_TITLES[sec] || [sec, '']; lg.innerHTML = `${title}${sub ? `<span class="sub">${sub}</span>` : ''}`; fs.appendChild(lg);
       const obj = cfg[sec] || {};
       const addField = (path, key, val) => {
-        const spec = FIELD_SPEC[path] || {}; const help = spec.help || ''; const name = spec.label || key;
+        const parts = path.split('.');
+        const spec = FIELD_SPEC[path] || (parts.length === 4 ? FIELD_SPEC[`${parts[0]}.${parts[1]}.${parts[3]}`] : null) || {};
+        const help = spec.help || '';
+        const name = FIELD_SPEC[path] ? (spec.label || key) : (spec.label ? `${key.split(':')[0]}: ${spec.label}` : key);
         const lab = document.createElement('label');
         let input;
         if (typeof val === 'boolean') {
@@ -599,7 +614,15 @@
       };
       Object.entries(obj).forEach(([k, v]) => {
         if (k === 'params' && v && typeof v === 'object') Object.entries(v).forEach(([pk, pv]) => {
-          if (pv !== null && typeof pv === 'object') return; addField(`${sec}.params.${pk}`, pk, pv);
+          if (pv !== null && typeof pv === 'object' && !Array.isArray(pv)) {
+            // one level deeper: regime's trend_params / range_params, the AI's indicator_params
+            Object.entries(pv).forEach(([sk, sv]) => {
+              if (sv !== null && typeof sv === 'object') return;
+              addField(`${sec}.params.${pk}.${sk}`, `${pk.replace(/_/g, ' ')}: ${sk}`, sv);
+            });
+            return;
+          }
+          addField(`${sec}.params.${pk}`, pk, pv);
         });
         else if (v !== null && typeof v === 'object') return; else addField(`${sec}.${k}`, k, v);
       });
@@ -632,7 +655,15 @@
   }
   $('cfg-save').addEventListener('click', async (e) => {
     e.preventDefault();
-    try { const r = await api('/api/config', { config: collectCfg() }); renderCfg(r.config); toast('Settings saved', 'They apply on the next Start.'); poll(); }
+    try {
+      const r = await api('/api/config', { config: collectCfg() });
+      renderCfg(r.config);
+      const gone = (r.dropped || []);
+      toast('Settings saved', gone.length
+        ? `Removed ${gone.length} setting(s) belonging to another strategy: ${gone.join(', ')}. They apply on the next Start.`
+        : 'They apply on the next Start.');
+      poll();
+    }
     catch (err) { showAlert(err.message, 'error', 12000); }
   });
   $('cfg-reload').addEventListener('click', (e) => { e.preventDefault(); loadSettings(); });

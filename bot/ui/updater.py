@@ -115,6 +115,40 @@ def _default_restart(exe: Path) -> None:
     subprocess.Popen([str(exe)], **kwargs)
 
 
+def _retire(target: Path, attempts: int = 3, wait: float = 0.4) -> Path:
+    """Move the running executable aside so the new one can take its place.
+
+    Windows allows renaming a running .exe but not overwriting it, and it refuses to
+    delete one that is still mapped: an earlier BTCBot.old.exe whose process has not fully
+    exited yet gives "[WinError 5] Access is denied". So the previous file is deleted when
+    that works, and otherwise simply left alone while the new build is parked under a name
+    nobody is holding. `cleanup_old` clears the leftovers on the next start.
+    """
+    base = target.with_name(target.stem + ".old" + target.suffix)
+    last: OSError | None = None
+    for attempt in range(attempts):
+        candidate = base if attempt == 0 else target.with_name(
+            f"{target.stem}.old-{now_ms()}-{attempt}{target.suffix}")
+        if candidate.exists():
+            try:
+                candidate.unlink()
+            except OSError as exc:  # locked by a process that has not exited yet
+                log.info("cannot remove %s (%s); trying another name", candidate.name, exc)
+                last = exc
+                continue
+        try:
+            target.rename(candidate)
+            return candidate
+        except OSError as exc:
+            last = exc
+            log.info("cannot move %s to %s (%s)", target.name, candidate.name, exc)
+            if attempt + 1 < attempts:
+                time.sleep(wait)
+    raise RuntimeError(
+        f"could not move {target.name} aside to install the update: {last}. "
+        f"Close any other running copy of the app and try again.")
+
+
 def sha256_of(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -263,12 +297,21 @@ class Updater:
                     self._verify(dest, sums)
                     downloaded.append((t, dest))
                 self.state = "installing"
-                for target, new in downloaded:
-                    old = target.with_name(target.stem + ".old" + target.suffix)
-                    if old.exists():
-                        old.unlink()
-                    target.rename(old)  # allowed on Windows even while the exe is running
-                    new.replace(target)
+                retired: list[tuple[Path, Path]] = []
+                try:
+                    for target, new in downloaded:
+                        retired.append((target, _retire(target)))
+                        new.replace(target)
+                except Exception:
+                    # Put back whatever was already moved, so a half-finished swap does not
+                    # leave the user without a working executable.
+                    for target, old in retired:
+                        try:
+                            if not target.exists():
+                                old.rename(target)
+                        except OSError:
+                            log.warning("could not restore %s from %s", target.name, old.name)
+                    raise
                 self.state = "restarting"
                 if before_restart:
                     before_restart()
@@ -283,14 +326,15 @@ class Updater:
                 raise
 
     def cleanup_old(self) -> None:
-        """Delete the previous executable left behind by an update (may still be exiting)."""
+        """Delete previous executables left behind by an update (one may still be exiting)."""
         if self.exe_path is None:
             return
-        for old in self.exe_path.parent.glob("*.old.exe"):
-            try:
-                old.unlink()
-            except OSError:
-                pass
+        for pattern in ("*.old.exe", "*.old-*.exe"):
+            for old in self.exe_path.parent.glob(pattern):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass  # still running or still mapped; the next start will get it
 
     # ----- background checks ------------------------------------------------------------
     def start_background(self, interval_minutes: float, auto_install: Callable[[], bool],

@@ -54,6 +54,47 @@ DEFAULT_GRID: dict[str, list[Any]] = {
     "trend_filter_period": [0, 100, 200],
 }
 
+# Each strategy has its own parameter names; searching one strategy's grid over another
+# would only produce settings it rejects.
+GRIDS: dict[str, dict[str, list[Any]]] = {
+    "ema_rsi": DEFAULT_GRID,
+    "breakout": {
+        "entry_period": [10, 20, 30, 55],
+        "exit_period": [5, 10, 20],
+        "atr_stop_mult": [1.5, 2.0, 3.0],
+        "min_breakout_atr": [0.0, 0.25, 0.5],
+        "trend_filter_period": [0, 100, 200],
+    },
+    "mean_reversion": {
+        "bb_period": [14, 20, 30],
+        "bb_std": [1.5, 2.0, 2.5],
+        "rsi_buy_max": [25.0, 35.0, 45.0],
+        "atr_stop_mult": [2.0, 2.5, 3.0],
+        "exit_band": ["middle", "upper"],
+        "trend_filter_period": [0, 100, 200],
+    },
+    "regime": {
+        "adx_period": [10, 14, 20],
+        "trend_above": [22.0, 25.0, 30.0],
+        "range_below": [15.0, 20.0, 25.0],
+    },
+    "buy_hold": {"stop_loss_pct": [0.0, 20.0, 35.0, 50.0]},
+}
+
+
+def default_grid(strategy: str | None) -> dict[str, list[Any]]:
+    """The search space for a strategy, or a clear refusal when searching makes no sense."""
+    name = strategy or "ema_rsi"
+    if name == "ai":
+        raise ValueError(
+            "searching over the 'ai' strategy would call the Claude API once per candle per "
+            "combination, which costs real money. Search 'ema_rsi' instead and copy the winner "
+            "into strategy.params.indicator_params.")
+    try:
+        return GRIDS[name]
+    except KeyError as exc:
+        raise ValueError(f"no default search space for strategy {name!r}; pass one explicitly") from exc
+
 
 def expand_grid(grid: dict[str, Sequence[Any]], *, sample: int | None = None,
                 seed: int = 7) -> list[dict[str, Any]]:
@@ -67,9 +108,14 @@ def expand_grid(grid: dict[str, Sequence[Any]], *, sample: int | None = None,
 
 
 def _is_valid(params: dict[str, Any]) -> bool:
+    """Drop combinations the strategies would reject, so they never reach a backtest."""
     if "ema_fast" in params and "ema_slow" in params and params["ema_fast"] >= params["ema_slow"]:
         return False
     if "rsi_buy_min" in params and "rsi_buy_max" in params and params["rsi_buy_min"] >= params["rsi_buy_max"]:
+        return False
+    if "entry_period" in params and "exit_period" in params and params["exit_period"] > params["entry_period"]:
+        return False
+    if "range_below" in params and "trend_above" in params and params["range_below"] > params["trend_above"]:
         return False
     return True
 
@@ -145,7 +191,8 @@ def grid_search(
 ) -> list[Candidate]:
     """Backtest every parameter combination and return them ranked, best first."""
     base = dict(cfg.strategy.params)
-    todo = list(combos) if combos is not None else expand_grid(grid or DEFAULT_GRID, sample=sample)
+    todo = (list(combos) if combos is not None
+            else expand_grid(grid or default_grid(strategy_name or cfg.strategy.name), sample=sample))
     if not todo:
         raise ValueError("the search space is empty")
     jobs = [(df, cfg, strategy_name, {**base, **params}, cash) for params in todo]
@@ -199,7 +246,7 @@ def walk_forward(
             f"not enough candles for {folds} folds: each block would be {block} candles and the "
             f"strategy needs {warm} just to warm up. Use fewer folds or a longer history.")
 
-    combos = expand_grid(grid or DEFAULT_GRID, sample=sample)
+    combos = expand_grid(grid or default_grid(strategy_name or cfg.strategy.name), sample=sample)
     results: list[WalkForwardFold] = []
     equities: list[pd.DataFrame] = []
     all_trades: list[Trade] = []

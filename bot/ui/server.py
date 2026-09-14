@@ -58,6 +58,7 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
             raise ApiError(409, str(exc)) from exc
 
     def save_config(q: dict[str, Any], body: dict[str, Any]) -> Any:
+        c.last_dropped_params = []
         try:
             if "yaml" in body:
                 c.save_config_yaml(str(body["yaml"]))
@@ -67,7 +68,7 @@ def build_routes(c: BotController) -> dict[tuple[str, str], Callable[[dict[str, 
             raise ApiError(400, "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())) from exc
         except Exception as exc:  # noqa: BLE001
             raise ApiError(400, f"{type(exc).__name__}: {exc}") from exc
-        return {"ok": True, "config": c.config_dict()}
+        return {"ok": True, "config": c.config_dict(), "dropped": list(c.last_dropped_params)}
 
     def start_backtest(q: dict[str, Any], body: dict[str, Any]) -> Any:
         try:

@@ -43,7 +43,7 @@ from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -115,6 +115,7 @@ class BotController:
         self.started_at: int | None = None
         self.replay_path: str | None = None
         self.recent_alerts: list[dict[str, Any]] = []
+        self.last_dropped_params: list[str] = []  # settings a save dropped as belonging elsewhere
         self._research_lock = threading.Lock()
         self._research_thread: threading.Thread | None = None
         self.research: dict[str, Any] = {"state": "idle"}
@@ -182,6 +183,7 @@ class BotController:
         return self.config_path.read_text(encoding="utf-8")
 
     def save_config(self, data: dict[str, Any]) -> BotConfig:
+        data, self.last_dropped_params = self._prune_strategy_params(data)
         cfg = BotConfig.model_validate(data)
         text = yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
         self.config_path.write_text("# Written by the BTC bot UI. See README.md for what each key means.\n" + text,
@@ -193,6 +195,24 @@ class BotController:
         cfg = BotConfig.model_validate(raw)
         self.config_path.write_text(text, encoding="utf-8")
         return cfg
+
+    def _prune_strategy_params(self, data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        """Strip parameters left behind by a previous strategy before they reach disk.
+
+        Switching from `ai` to `ema_rsi` used to leave `model` and `mode` in the file, and
+        the next Start died on a validation error the user could do nothing about.
+        """
+        from bot.strategy import prune_params
+
+        strategy = data.get("strategy")
+        if not isinstance(strategy, dict) or not isinstance(strategy.get("params"), dict):
+            return data, []
+        clean, dropped = prune_params(str(strategy.get("name") or ""), strategy["params"])
+        if not dropped:
+            return data, []
+        log.info("dropped %d strategy setting(s) that belong to another strategy: %s",
+                 len(dropped), ", ".join(sorted(set(dropped))))
+        return {**data, "strategy": {**strategy, "params": clean}}, sorted(set(dropped))
 
     # ----- secrets ------------------------------------------------------------------------
     def secrets_status(self) -> dict[str, Any]:
