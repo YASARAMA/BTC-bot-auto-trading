@@ -2,6 +2,38 @@
 
 Every entry is one released build. The app shows the newest entry after it updates itself.
 
+## 0.9.0
+
+**This release is about the win rate, and about what the win rate is worth.**
+
+- **Entry filters.** A new `filters` section decides when *not* to enter, whatever the
+  strategy says: confirm against a longer timeframe (daily while trading hourly), skip
+  markets that are barely moving or moving too wildly, skip chosen hours, skip weekends.
+  They apply to every strategy including the AI one, and they never block an exit.
+- **Measured, not guessed.** On the two sample files, the daily trend filter plus skipping
+  weekends took the breakout strategy from a 39.3% win rate to 48.4% (binance) and from
+  37.6% to 44.0% (coinbase), roughly doubled the profit per trade, and cut the worst
+  drawdown from -15.3% to -6.3%. Those two are on by default in Balanced because they were
+  the only settings that improved *both* files. Everything that helped only one of them is
+  available but off.
+- **Time stop.** `exits.time_stop_candles` closes a position that has gone nowhere. On the
+  binance sample it took the win rate from 39.3% to 50.0% and the drawdown from -8.0% to
+  -5.6%; on the coinbase sample it raised the win rate but cost profit per trade, so it is
+  off in Balanced and on in Safe and Aggressive.
+- **Expectancy everywhere.** Every backtest now reports the money made per trade, the
+  Research tab can rank by it, and it sits on the results tiles next to the win rate -
+  because a 65% win rate with a small average win is a losing strategy, which is exactly
+  what tightening the take profit produces.
+- **A win-rate floor in the search.** The Research tab takes a minimum win rate: settings
+  below it are discarded, while the objective still decides which survivor is best.
+  A floor, not a goal.
+- **Trading modes carry all of it.** Safe filters hardest and is patient; Aggressive keeps
+  the weekend rule and a short time stop; each mode raises the candle history it needs.
+- **Fixed: a filter that cannot be fed.** A daily trend line needs weeks of hourly candles.
+  The live bot refuses to start rather than answering "not ready" forever, the backtester
+  widens its own window, and a backtest over a range too short for the filters runs without
+  them and says so in the report instead of failing.
+
 ## 0.8.0
 
 - **Three new strategies.** `breakout` buys when price clears the high of the last N

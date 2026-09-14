@@ -22,6 +22,7 @@ from bot.risk.manager import RiskManager
 from bot.state.store import StateStore
 from bot.strategy import get_strategy
 from bot.strategy.base import validate_frame
+from bot.strategy.filters import EntryFilters
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class BacktestResult:
     equity: pd.DataFrame
     strategy: dict[str, Any]
     config: dict[str, Any] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)  # anything the run had to change to be possible
 
 
 def run_backtest(
@@ -83,8 +85,20 @@ def run_backtest(
 
     strategy.precompute(df)
     n = len(df)
-    window = cfg.exchange.candle_history
-    warm = strategy.warmup
+    notes: list[str] = []
+    # The entry filters read history of their own - a daily trend line needs weeks of hourly
+    # candles - so the rolling window has to be at least as long as the longest of them, or
+    # the filter silently answers "not ready" on every candle and the run makes no trades.
+    if engine.filters.active and n < engine.filters.warmup + 2:
+        # Refusing the whole run would be worse: the filters are a default the user did not
+        # ask for on this range. They are switched off and the result says so, because a
+        # backtest whose settings quietly differ from the live bot's is not worth having.
+        notes.append(
+            f"entry filters were off for this run: they need {engine.filters.warmup + 2} candles "
+            f"and this range has {n}. The live bot keeps them; a longer range would too.")
+        engine.filters = EntryFilters()
+    warm = max(strategy.warmup, engine.filters.warmup)
+    window = max(cfg.exchange.candle_history, warm + 2)
     if n < warm + 2:
         raise ValueError(f"need at least {warm + 2} candles for {name}, got {n}")
     first_price = float(df["close"].iloc[warm - 1])
@@ -119,7 +133,7 @@ def run_backtest(
     metrics = compute_metrics(equity, trades, tf_ms=tf_ms, initial_cash=cash, first_price=first_price, last_price=last_price)
     store.close()
     return BacktestResult(
-        metrics=metrics, trades=trades, equity=equity, strategy=strategy.describe(),
+        metrics=metrics, trades=trades, equity=equity, strategy=strategy.describe(), notes=notes,
         config={"symbol": symbol, "timeframe": cfg.exchange.timeframe, "fee_rate": cfg.exchange.fee_rate,
                 "slippage_bps": cfg.exchange.slippage_bps, "risk": risk_cfg.model_dump()},
     )

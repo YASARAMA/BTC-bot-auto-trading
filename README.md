@@ -370,6 +370,56 @@ Add a strategy by subclassing `bot.strategy.base.Strategy`, implementing `warmup
 same candles in, same signal out. Parameters left over from a strategy you switched away
 from are dropped with a warning rather than stopping the bot.
 
+## Entry filters: when *not* to trade
+
+Every strategy answers "is this a setup?". The `filters` section answers the other
+question, "is this a market worth taking a setup in?", and it applies to whichever strategy
+is selected, the AI one included. Filters only ever block an entry — an exit is never
+filtered, because a position that needs to close has to close.
+
+| Key | What it blocks |
+| --- | --- |
+| `htf_factor`, `htf_period`, `htf_mode` | Entries that disagree with a longer timeframe (24 = daily when trading 1h) |
+| `htf_slope_lookback` | How many higher-timeframe blocks "rising" is measured over (1 flips on a single block) |
+| `min_atr_pct`, `max_atr_pct` | A market that is barely moving, or moving too wildly to size a stop on |
+| `hours_utc`, `skip_weekends` | Hours and days you do not want to be in the market |
+
+Measured on both sample files with the `breakout` strategy, this is what each one is worth
+(the shipped default is the daily trend filter plus skipping weekends — the only two that
+improved *both* files):
+
+| | win rate | per trade | return | max drawdown |
+| --- | --- | --- | --- | --- |
+| breakout, no filters (binance) | 39.3% | +19.54 | +10.94% | −8.0% |
+| + daily trend rising, no weekends | **48.4%** | **+33.49** | +10.38% | −6.9% |
+| breakout, no filters (coinbase) | 37.6% | +14.98 | +36.99% | −15.3% |
+| + daily trend rising, no weekends | **44.0%** | **+40.28** | +43.91% | **−6.3%** |
+
+A filter that reads a daily trend needs weeks of hourly candles, so `exchange.candle_history`
+has to be at least as long. Selecting a trading mode raises it for you, and both the live
+bot and the backtester refuse to run — loudly — rather than quietly answering "not ready"
+on every candle.
+
+## The time stop
+
+`exits.time_stop_candles` closes a position that has gone nowhere: after N candles, if the
+trade is less than `time_stop_min_atr` ATR in profit, it is sold. On the binance sample it
+took the win rate from 39.3% to 50.0% and the drawdown from −8.0% to −5.6%; on the coinbase
+sample it raised the win rate but cost some profit per trade. It is off by default for that
+reason, and on in the safe and aggressive modes.
+
+## Why the win rate is the wrong target
+
+The win rate is the easiest number in trading to improve and the easiest to be fooled by.
+Moving the take profit from 3 ATR to 0.75 ATR on the reference strategy takes it from 36.6%
+to 64.8% — and the account from +0.85% to −6.19%, because the average win collapses from
++92.94 to +16.34 while the average loss stays where it was.
+
+What matters is **expectancy**: win rate × average win − loss rate × average loss. Every
+backtest reports it, the Research tab can rank by it, and the win-rate field there is a
+*floor* (discard anything that wins too rarely to sit through) rather than something to
+maximise. Entry quality is the only lever that raises both.
+
 ## Market or maker orders
 
 | `exchange.order_type` | What happens | The cost |

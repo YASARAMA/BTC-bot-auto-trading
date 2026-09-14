@@ -18,7 +18,7 @@ class Side(str, Enum):
 
 
 OrderStatus = Literal["open", "closed", "canceled", "rejected"]
-IntentKind = Literal["entry", "exit", "stop_loss", "take_profit"]
+IntentKind = Literal["entry", "exit", "stop_loss", "take_profit", "time_stop"]
 
 
 @dataclass(frozen=True)

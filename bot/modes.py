@@ -25,6 +25,9 @@ MODES: dict[str, dict[str, Any]] = {
             "atr_stop_mult": 3.0, "atr_tp_mult": 4.5, "trend_lookback": 10,
         },
         "ai": {"effort": "high", "min_confidence": 0.7, "max_stop_atr": 3.0, "only_on_technical_setup": True},
+        "filters": {"htf_factor": 24, "htf_period": 20, "htf_mode": "both", "htf_slope_lookback": 3,
+                    "skip_weekends": True, "max_atr_pct": 3.0},
+        "exits": {"time_stop_candles": 48, "time_stop_min_atr": 0.5},
         "params_by_strategy": {
             "breakout": {"entry_period": 40, "exit_period": 20, "atr_stop_mult": 3.0,
                          "min_breakout_atr": 0.5, "trend_filter_period": 100},
@@ -54,6 +57,12 @@ MODES: dict[str, dict[str, Any]] = {
             "atr_stop_mult": 2.0, "atr_tp_mult": 3.0, "trend_lookback": 5,
         },
         "ai": {"effort": "medium", "min_confidence": 0.5, "max_stop_atr": 3.0, "only_on_technical_setup": False},
+        # Measured on both sample files: the daily trend filter and skipping weekends raise
+        # the win rate by 6-9 points, raise the profit per trade, and roughly halve the
+        # drawdown. Nothing else improved both files, so nothing else is on by default.
+        "filters": {"htf_factor": 24, "htf_period": 20, "htf_mode": "rising", "htf_slope_lookback": 3,
+                    "skip_weekends": True},
+        "exits": {"time_stop_candles": 0},
         "params_by_strategy": {
             "breakout": {"entry_period": 20, "exit_period": 10, "atr_stop_mult": 2.0,
                          "min_breakout_atr": 0.25, "trend_filter_period": 100},
@@ -83,6 +92,10 @@ MODES: dict[str, dict[str, Any]] = {
             "atr_stop_mult": 1.5, "atr_tp_mult": 2.5, "trend_lookback": 3,
         },
         "ai": {"effort": "medium", "min_confidence": 0.35, "max_stop_atr": 2.0, "only_on_technical_setup": False},
+        # Aggressive wants trades, and every filter removes some: only the weekend rule
+        # stays, because thin liquidity hurt this mode most.
+        "filters": {"htf_factor": 0, "skip_weekends": True},
+        "exits": {"time_stop_candles": 12, "time_stop_min_atr": 0.5},
         "params_by_strategy": {
             "breakout": {"entry_period": 10, "exit_period": 5, "atr_stop_mult": 1.5,
                          "min_breakout_atr": 0.0, "trend_filter_period": 0},
@@ -139,6 +152,18 @@ def apply_mode(config: dict[str, Any], mode: str) -> dict[str, Any]:
     preset = MODES[mode]
     out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in config.items()}
     out["risk"] = {**out.get("risk", {}), **preset["risk"]}
+    out["filters"] = {**out.get("filters", {}), **preset.get("filters", {})}
+    out["exits"] = {**out.get("exits", {}), **preset.get("exits", {})}
+    # A daily trend filter reads weeks of hourly candles. A mode that switches one on has
+    # to raise the rolling window with it, or the bot refuses to start.
+    from bot.strategy.filters import EntryFilters
+
+    needed = EntryFilters(**{k: v for k, v in out["filters"].items()
+                             if k in EntryFilters.__dataclass_fields__}).warmup
+    exchange = {**out.get("exchange", {})}
+    if needed and int(exchange.get("candle_history", 0)) < needed:
+        exchange["candle_history"] = needed
+        out["exchange"] = exchange
     strategy = {**out.get("strategy", {})}
     params = {**strategy.get("params", {})}
     name = strategy.get("name", "ema_rsi")

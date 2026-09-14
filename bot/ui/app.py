@@ -43,7 +43,7 @@ from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 
@@ -402,6 +402,8 @@ class BotController:
             blockers.append(f"Trading is halted for today: {risk.get('halt_reason')}")
         if risk.get("cooldown"):
             blockers.append(f"Cooldown after {risk.get('consecutive_losses')} losses in a row.")
+        if last.get("filtered"):
+            blockers.append(f"An entry filter is holding entries back: {last['filtered']}")
         if signal.get("reason", "").startswith("warming up"):
             blockers.append(signal["reason"].capitalize() + ". It needs a full history before it decides.")
         waiting = (f"The strategy enters only when the fast EMA crosses above the slow EMA. "
@@ -517,6 +519,7 @@ class BotController:
                     reason = str(signal.get("reason") or "")
                     code = ("warming up" if reason.startswith("warming up")
                             else "AI not called" if reason.startswith("AI not called")
+                            else "entry filtered" if reason.startswith("entry filtered")
                             else "no entry signal")
                 self.decisions[code] = self.decisions.get(code, 0) + 1
                 self.last_signals = (self.last_signals + [{
@@ -786,8 +789,9 @@ class BotController:
                     note(done=done, total=total, phase="testing parameter sets")
 
                 ranked = grid_search(df, self.runtime_cfg(cfg), objective=objective, sample=sample,
-                                     min_trades=int(params.get("min_trades") or 10), workers=workers,
-                                     progress=tick)
+                                     min_trades=int(params.get("min_trades") or 10),
+                                     min_win_rate=float(params.get("min_win_rate") or 0.0),
+                                     workers=workers, progress=tick)
                 out = {"mode": "grid", "top": [c.to_dict() for c in ranked[:25]],
                        "tested": len(ranked), "objective": objective,
                        "note": "These are in-sample numbers: the search saw this whole period. "
@@ -819,6 +823,7 @@ class BotController:
                 out = walk_forward(df, self.runtime_cfg(cfg), folds=int(params.get("folds") or 4),
                                    train_ratio=float(params.get("train_ratio") or 0.7), objective=objective,
                                    sample=sample, min_trades=max(1, int(params.get("min_trades") or 10) // 2),
+                                   min_win_rate=float(params.get("min_win_rate") or 0.0),
                                    workers=workers, progress=wf_tick)
                 out["mode"] = "walk-forward"
             with self._research_lock:
@@ -1097,6 +1102,7 @@ class BotController:
                 self.backtest = {
                     "state": "done", "params": params, "source": source, "candles": int(len(df)),
                     "metrics": result.metrics, "strategy": result.strategy, "config": result.config,
+                    "notes": list(result.notes),
                     "trades": [t.to_dict() for t in result.trades][-200:],
                     "equity": _downsample(curve, 1500),
                     "report": format_report(result, show_trades=10),

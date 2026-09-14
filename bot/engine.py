@@ -20,11 +20,12 @@ from bot.execution.executor import OrderExecutor
 from bot.execution.order_id import is_bot_order_id
 from bot.execution.paper import PaperExchange
 from bot.logging_utils import log_event
-from bot.models import Order, OrderIntent, Position, Rejection, Side, Trade
+from bot.models import Action, Order, OrderIntent, Position, Rejection, Side, Signal, Trade
 from bot.notify.notifier import Notifier
 from bot.risk.manager import AccountSnapshot, RiskManager
 from bot.state.store import StateStore
 from bot.strategy.base import Strategy
+from bot.strategy.filters import EntryFilters
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class TradingEngine:
         # middle of a candle being processed. One lock makes each of those whole, so the
         # position and the database can never be half-updated by two threads at once.
         self.lock = threading.RLock()
+        self.filters = EntryFilters(**cfg.filters.model_dump())
         self.position: Position | None = None
         self.last_candle_ts: int | None = None
         self.unmanaged_base = 0.0
@@ -233,6 +235,13 @@ class TradingEngine:
             summary.update(exit_summary)
 
         signal = self.evaluate_strategy(df, ts, price)
+        blocked = self.filters.block_reason(df) if signal.action == Action.BUY else None
+        if blocked:
+            # The setup may be real; this is not the market to take it in. Exits are never
+            # filtered, so a position that must close still closes.
+            summary["filtered"] = blocked
+            self._log("entry_filtered", reason=blocked, candle_ts=ts)
+            signal = Signal.hold(f"entry filtered: {blocked}")
         account = self.account(price, now)
         decision = self.risk.evaluate(signal, account, ts)
         summary["signal"] = signal.to_dict()
@@ -335,7 +344,27 @@ class TradingEngine:
                 return out
             pos = self.position
 
-        # 3. move the stop up: breakeven first, then the trailing stop
+        # 3. the time stop: a trade that has gone nowhere is capital doing nothing, and on
+        # this data the slow bleeders are where the losses come from.
+        if exits.time_stop_candles and self.tf_ms > 0:
+            age = int((candle_ts - pos.entry_ts) // self.tf_ms)
+            mark = market_price if market_price is not None else high
+            threshold = exits.time_stop_min_atr * atr if atr > 0 else 0.0
+            if age >= exits.time_stop_candles and mark < pos.entry_price + threshold:
+                intent = OrderIntent(side=Side.SELL, qty=pos.qty, ref_price=mark, kind="time_stop",
+                                     candle_ts=candle_ts, confidence=1.0,
+                                     reason=f"time stop: {age} candles without {exits.time_stop_min_atr:g}x ATR of progress")
+                order = self.executor.execute(intent)
+                if order is not None:
+                    self._apply_fill(order, intent, now, mark)
+                    out["time_stop"] = {"candles": age, "price": mark}
+                    self._log("time_stop", candles=age, price=mark)
+                    return out
+                pos = self.position
+                if pos is None:
+                    return out
+
+        # 4. move the stop up: breakeven first, then the trailing stop
         new_stop = pos.stop_loss
         if exits.breakeven_after_atr > 0 and atr > 0 and pos.highest_price >= pos.entry_price + exits.breakeven_after_atr * atr:
             breakeven = pos.entry_price * (1 + self.cfg.exchange.fee_rate * 2)

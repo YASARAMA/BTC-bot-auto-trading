@@ -332,10 +332,13 @@
             <label>Combinations to try <input type="number" id="rs-sample" min="4" max="500" value="60"></label>
             <label>Rank by <select id="rs-objective">
               <option value="return_over_drawdown" selected>Return per unit of drawdown</option>
+              <option value="expectancy">Money per trade (expectancy)</option>
               <option value="return">Total return</option>
               <option value="sharpe">Sharpe</option>
               <option value="profit_factor">Profit factor</option>
+              <option value="win_rate">Win rate (use the floor below too)</option>
             </select></label>
+            <label>Minimum win rate <input type="number" id="rs-minwin" min="0" max="90" step="1" value="0"><span class="muted small">% · a floor, not a goal</span></label>
           </div>
           <div class="row"><button type="submit" class="primary" id="rs-run">Run</button>
             <span class="muted small" id="rs-status"></span></div>

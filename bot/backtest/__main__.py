@@ -107,6 +107,8 @@ def format_report(result: BacktestResult, show_trades: int) -> str:
                 f"{t.exit_price:>10.2f} {t.pnl:>9.2f} {t.exit_reason}"
             )
         lines.append("-" * 64)
+    for note in result.notes:
+        lines.append(f"NOTE      {note}")
     lines.append("Backtest results are hypothetical. Past performance does not predict future returns.")
     lines.append("=" * 64)
     return "\n".join(lines)

@@ -81,6 +81,12 @@ def compute_metrics(
         "win_rate_pct": round(len(wins) / len(trades) * 100.0, 2) if trades else 0.0,
         "profit_factor": round(profit_factor, 2) if profit_factor is not None else None,
         "no_losing_trades": gross_loss == 0 and len(trades) > 0,
+        # Expectancy is the honest summary: win rate times the average win, minus the loss
+        # rate times the average loss. A high win rate with a small average win loses money,
+        # which is why tightening the take profit flatters the win rate and empties the
+        # account. Equal to avg_trade_pnl by construction; both are kept because people
+        # look for the word they know.
+        "expectancy": round(sum(t.pnl for t in trades) / len(trades), 2) if trades else 0.0,
         "avg_trade_pnl": round(sum(t.pnl for t in trades) / len(trades), 2) if trades else 0.0,
         "avg_win": round(gross_profit / len(wins), 2) if wins else 0.0,
         "avg_loss": round(-gross_loss / len(losses), 2) if losses else 0.0,

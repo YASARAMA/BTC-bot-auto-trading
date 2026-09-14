@@ -27,6 +27,7 @@ from bot.notify.notifier import Notifier
 from bot.risk.manager import RiskManager
 from bot.state.store import StateStore
 from bot.strategy import get_strategy
+from bot.strategy.filters import EntryFilters
 
 log = logging.getLogger("bot.main")
 
@@ -59,12 +60,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str | None = None,
                   replay_start: int | None = None) -> Runtime:
     strategy = get_strategy(cfg.strategy.name, cfg.strategy.params)
-    if strategy.warmup > cfg.exchange.candle_history:
+    filters = EntryFilters(**cfg.filters.model_dump())
+    needed = max(strategy.warmup, filters.warmup)
+    if needed > cfg.exchange.candle_history:
+        who = "strategy" if strategy.warmup >= filters.warmup else "entry filters"
         raise ValueError(
-            f"strategy {strategy.name!r} needs {strategy.warmup} candles of history but "
-            f"exchange.candle_history is {cfg.exchange.candle_history}. The bot would never "
-            f"finish warming up. Raise candle_history to at least {strategy.warmup} in Settings, "
-            f"or use shorter strategy periods.")
+            f"the {who} need {needed} candles of history but exchange.candle_history is "
+            f"{cfg.exchange.candle_history}. The bot would never finish warming up. Raise "
+            f"candle_history to at least {needed} in Settings, or use shorter periods.")
     store = StateStore(cfg.state.db_path)
     notifier = Notifier(cfg.notify, secrets, prefix=f"[{cfg.exchange.symbol} {mode}] ")
     replay: CsvMarketData | None = None

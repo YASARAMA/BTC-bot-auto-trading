@@ -103,6 +103,32 @@ class ExitsConfig(StrictModel):
     breakeven_after_atr: float = Field(0.0, ge=0.0, description="move the stop to entry once this much in profit")
     partial_take_fraction: float = Field(0.0, ge=0.0, le=0.9, description="fraction of the position to sell early")
     partial_take_atr: float = Field(1.0, gt=0.0, description="profit at which the partial sale happens")
+    time_stop_candles: int = Field(
+        0, ge=0, description="close a trade that has gone nowhere after this many candles; 0 = off")
+    time_stop_min_atr: float = Field(
+        0.5, ge=0.0, description="'nowhere' means less than this much ATR of profit when the time is up")
+
+
+class FiltersConfig(StrictModel):
+    """When not to enter, whatever the strategy says. Exits are never filtered.
+
+    These apply to every strategy, including the AI one. Off by default: each of them
+    trades fewer signals, and fewer signals is only an improvement when the ones it removes
+    were the bad ones - which is what the Research tab is there to check.
+    """
+
+    htf_factor: int = Field(
+        0, ge=0, description="confirm against a timeframe this many times longer (4 = 4h when trading 1h); 0 = off")
+    htf_period: int = Field(50, ge=2, description="EMA period on that higher timeframe")
+    htf_mode: Literal["rising", "above", "both"] = Field(
+        "rising", description="require the higher trend line to be rising, price to be above it, or both")
+    htf_slope_lookback: int = Field(
+        3, ge=1, description="over how many higher-timeframe blocks 'rising' is measured; 1 flips on a single block")
+    min_atr_pct: float = Field(0.0, ge=0.0, description="skip entries when ATR is below this % of price; 0 = off")
+    max_atr_pct: float = Field(0.0, ge=0.0, description="skip entries when ATR is above this % of price; 0 = off")
+    atr_period: int = Field(14, ge=1)
+    hours_utc: str = Field("", description="only enter in these UTC hours, e.g. '6-22' or '0,1,2'; empty = always")
+    skip_weekends: bool = Field(False, description="no new entries on Saturday or Sunday")
 
 
 class PaperConfig(StrictModel):
@@ -142,6 +168,7 @@ class BotConfig(StrictModel):
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     exits: ExitsConfig = Field(default_factory=ExitsConfig)
+    filters: FiltersConfig = Field(default_factory=FiltersConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)

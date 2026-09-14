@@ -311,3 +311,90 @@ def test_trend_filter_blocks_buys_below_the_trend_line(cfg):
             blocked += 1
             assert "trend line" in sig.reason or "not ready" in sig.reason
     assert blocked, "the trend filter blocks at least one buy while price is under the trend line"
+
+
+def test_time_stop_closes_a_trade_that_went_nowhere(cfg, tmp_path):
+    """A position that neither wins nor loses is capital doing nothing, and on real data
+    the slow bleeders are where the money goes."""
+    closes = [100.0] * 5 + [100.2] * 20  # bought, then flat for twenty candles
+    df = make_ohlcv(closes, spread=0.0)
+    ts = df["ts"].tolist()
+    strategy = ScriptedStrategy({ts[4]: buy_signal(100.0, stop_pct=0.10, tp_pct=0.20)})
+    clock = {"now": ts[0]}
+    timed = cfg.model_copy(update={"exits": cfg.exits.model_copy(
+        update={"time_stop_candles": 8, "time_stop_min_atr": 0.5})})
+    engine, exchange = build(timed, StateStore(tmp_path / "s.sqlite"), strategy, lambda: clock["now"])
+
+    out = None
+    for i in range(len(df) - 1):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        exchange.set_price(price)
+        out = engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+        if engine.position is None and i > 4:
+            break
+    assert engine.position is None, "the time stop must close it"
+    assert out and out.get("time_stop"), out
+    assert out["time_stop"]["candles"] >= 8
+    trades = engine.store.trades()
+    assert trades and trades[-1].exit_reason == "time_stop", "and it is recorded as its own exit"
+
+
+def test_the_time_stop_leaves_a_working_trade_alone(cfg, tmp_path):
+    closes = [100.0] * 5 + [100.0 + i for i in range(1, 21)]  # steadily in profit
+    df = make_ohlcv(closes, spread=0.0)
+    ts = df["ts"].tolist()
+    strategy = ScriptedStrategy({ts[4]: buy_signal(100.0, stop_pct=0.10, tp_pct=0.50)})
+    clock = {"now": ts[0]}
+    timed = cfg.model_copy(update={"exits": cfg.exits.model_copy(
+        update={"time_stop_candles": 8, "time_stop_min_atr": 0.5})})
+    engine, exchange = build(timed, StateStore(tmp_path / "s.sqlite"), strategy, lambda: clock["now"])
+
+    for i in range(len(df) - 1):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        exchange.set_price(price)
+        engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+    assert engine.position is not None, "a trade that is working must be left to work"
+
+
+def test_entry_filters_block_a_buy_but_never_an_exit(cfg, tmp_path):
+    # Flat prices, so nothing but the scripted signals ever closes the position.
+    df = make_ohlcv([100.0] * 9, spread=0.0)
+    ts = df["ts"].tolist()
+    strategy = ScriptedStrategy({ts[4]: buy_signal(100.0), ts[6]: Signal(Action.SELL, 1.0, "get out")})
+    clock = {"now": ts[0]}
+    # A window that excludes every hour in the fixture: the entry is refused, not the exit.
+    hour = pd.Timestamp(ts[4], unit="ms", tz="UTC").hour
+    window = f"{(hour + 2) % 24}-{(hour + 3) % 24}"
+    filtered = cfg.model_copy(update={"filters": cfg.filters.model_copy(update={"hours_utc": window})})
+    engine, exchange = build(filtered, StateStore(tmp_path / "s.sqlite"), strategy, lambda: clock["now"])
+
+    for i in range(5):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        exchange.set_price(price)
+        out = engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+    assert engine.position is None, "the filter blocked the entry"
+    assert "outside the trading window" in out["filtered"]
+    assert out["signal"]["action"] == "HOLD" and "entry filtered" in out["signal"]["reason"]
+
+    # Open a position with the filter off, then switch it on: the exit must still fire, or
+    # a filter could trap a trade in a market it has decided not to trade.
+    second = ScriptedStrategy({ts[4]: buy_signal(100.0), ts[6]: Signal(Action.SELL, 1.0, "get out")})
+    open_engine, open_exchange = build(cfg, StateStore(tmp_path / "s2.sqlite"), second, lambda: clock["now"])
+    for i in range(5):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        open_exchange.set_price(price)
+        open_engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+    assert open_engine.position is not None, "the entry went through with no filter"
+
+    open_engine.filters = engine.filters  # the same blocking filter, now with a trade open
+    for i in range(5, 7):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        open_exchange.set_price(price)
+        out = open_engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+    assert open_engine.position is None, "an exit is never filtered"
+    assert out["order"]["side"] == "sell" and "filtered" not in out

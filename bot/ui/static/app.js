@@ -519,8 +519,8 @@
   });
 
   // ----- settings -----
-  const SECTIONS = ['exchange', 'strategy', 'risk', 'exits', 'paper', 'notify', 'update', 'logging', 'state'];
-  const SECTION_TITLES = { exits: ['Exit rules', 'how an open position is managed'], update: ['Updates', 'self-update from GitHub releases'], exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
+  const SECTIONS = ['exchange', 'strategy', 'risk', 'exits', 'filters', 'paper', 'notify', 'update', 'logging', 'state'];
+  const SECTION_TITLES = { exits: ['Exit rules', 'how an open position is managed'], filters: ['Entry filters', 'when not to enter, whatever the strategy says'], update: ['Updates', 'self-update from GitHub releases'], exchange: ['Exchange & market', 'where and what the bot trades'], strategy: ['Strategy', 'signal parameters'], risk: ['Risk limits', 'what the bot may never exceed'], paper: ['Paper trading', 'simulated account'], notify: ['Notifications', 'which events are sent'], logging: ['Logging', ''], state: ['Storage', ''] };
   const FIELD_SPEC = {
     'exchange.id': { label: 'Exchange', type: 'suggest', meta: 'exchanges' }, 'exchange.symbol': { label: 'Market (BASE/QUOTE)' },
     'exchange.timeframe': { label: 'Timeframe the bot trades on', type: 'select', meta: 'timeframes' },
@@ -571,6 +571,17 @@
     'exits.breakeven_after_atr': { label: 'Move stop to breakeven after (× ATR)', help: '0 = off' },
     'exits.partial_take_fraction': { label: 'Partial take profit: fraction to sell', help: '0 = off, 0.5 = half' },
     'exits.partial_take_atr': { label: 'Partial take profit at (× ATR)' },
+    'exits.time_stop_candles': { label: 'Close a trade going nowhere after (candles)', help: '0 = off' },
+    'exits.time_stop_min_atr': { label: '...unless it is this far in profit (× ATR)' },
+    'filters.htf_factor': { label: 'Confirm against a longer timeframe (×)', help: '24 = daily when trading 1h · 0 = off · needs that much more history' },
+    'filters.htf_period': { label: 'Trend EMA on that timeframe' },
+    'filters.htf_mode': { label: 'What the higher timeframe must show', type: 'select', options: ['rising', 'above', 'both'], help: 'rising trend line, price above it, or both' },
+    'filters.htf_slope_lookback': { label: 'Rising measured over (blocks)' },
+    'filters.min_atr_pct': { label: 'Skip when volatility is below (% of price)', help: '0 = off' },
+    'filters.max_atr_pct': { label: 'Skip when volatility is above (% of price)', help: '0 = off' },
+    'filters.atr_period': { label: 'Volatility ATR period' },
+    'filters.hours_utc': { label: 'Only enter in these UTC hours', help: 'e.g. 6-22 or 0,1,2 · empty = all day' },
+    'filters.skip_weekends': { label: 'No new entries at weekends', help: 'thin books move price without meaning it' },
     'strategy.params.trend_filter_period': { label: 'Trend filter EMA period', help: 'breakout: only buy above it · mean reversion: only buy while it rises · 0 = off' },
     'notify.telegram_commands': { label: 'Obey Telegram commands from your chat' },
     'notify.watchdog_minutes': { label: 'Alert if no cycle for (minutes)', help: '0 = off' },
@@ -748,10 +759,12 @@
     if (bt.state === 'error') { st.textContent = ''; showAlert(`Backtest failed: ${bt.error}`, 'error', 12000); return; }
     if (bt.state !== 'done') { st.textContent = ''; return; }
     st.textContent = `done · ${bt.candles} candles from ${bt.source}`;
+    if ((bt.notes || []).length) showAlert(bt.notes.join(' · '), 'warn', 14000);
     const m = bt.metrics;
     const tiles = [['Total return', fmt.pct(m.total_return_pct), cls(m.total_return_pct)], ['Buy & hold', fmt.pct(m.buy_hold_return_pct), cls(m.buy_hold_return_pct)],
       ['Max drawdown', fmt.pct(m.max_drawdown_pct), 'neg'], ['Sharpe', m.sharpe, cls(m.sharpe)], ['Trades', m.trades, ''],
-      ['Win rate', `${m.win_rate_pct}%`, ''], ['Profit factor', m.profit_factor == null ? 'n/a' : m.profit_factor, cls((m.profit_factor || 1) - 1)], ['Exposure', `${m.exposure_pct}%`, '']];
+      ['Win rate', `${m.win_rate_pct}%`, ''], ['Per trade', fmt.money(m.expectancy), cls(m.expectancy)],
+      ['Profit factor', m.profit_factor == null ? 'n/a' : m.profit_factor, cls((m.profit_factor || 1) - 1)], ['Exposure', `${m.exposure_pct}%`, '']];
     $('bt-tiles').innerHTML = tiles.map(([l, v, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join('');
     $('bt-result').classList.remove('hidden');
     drawLine($('bt-chart'), bt.equity.map((e) => ({ x: e.ts, y: e.equity })), { baseline: m.initial_equity });
@@ -1106,7 +1119,7 @@
     e.preventDefault();
     const body = { csv: $('rs-source').value, mode: $('rs-mode').value, folds: Number($('rs-folds').value),
                    sample: Number($('rs-sample').value), objective: $('rs-objective').value,
-                   runs: 2000, method: 'resample' };
+                   min_win_rate: Number($('rs-minwin').value || 0), runs: 2000, method: 'resample' };
     try { renderResearch(await api('/api/research', body)); } catch (err) { showAlert(err.message); }
   });
   $('rs-apply').addEventListener('click', async () => {

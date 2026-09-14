@@ -7,7 +7,7 @@ from bot.backtest import run_backtest
 from bot.backtest.__main__ import format_report, main as backtest_main
 from bot.backtest.metrics import compute_metrics, max_drawdown_pct, sharpe_ratio
 from bot.models import Trade
-from tests.conftest import make_ohlcv
+from tests.conftest import make_ohlcv, trending_series
 
 
 def wavy(n=900, base=100.0):
@@ -71,3 +71,45 @@ def test_cli_with_csv(tmp_path, capsys):
                         "--param", "atr_stop_mult=2.5", "--show-trades", "2"])
     out = capsys.readouterr().out
     assert rc == 0 and "Backtest" in out and "Trades" in out
+
+
+def test_a_filter_that_needs_more_history_widens_the_window_instead_of_going_quiet(cfg):
+    """A daily trend filter needs weeks of hourly candles. If the rolling window stayed at
+    candle_history the filter would answer "not ready" on every candle and the run would
+    make no trades at all - which looks like a strategy that never triggers."""
+    from bot.data.history import load_csv
+
+    df = load_csv("data/samples/binance_BTCUSDT_1h_2020-11_2021-05.csv")
+    params = {"entry_period": 20, "exit_period": 10}
+    daily = cfg.model_copy(update={
+        "exchange": cfg.exchange.model_copy(update={"candle_history": 300}),
+        "filters": cfg.filters.model_copy(update={"htf_factor": 24, "htf_period": 20, "htf_mode": "rising"}),
+    })
+    filtered = run_backtest(df, daily, strategy_name="breakout", params=params)
+    assert filtered.metrics["trades"] > 0, "the filter must be able to answer"
+
+    plain = run_backtest(df, cfg, strategy_name="breakout", params=params)
+    assert filtered.metrics["trades"] < plain.metrics["trades"], "and it must remove some entries"
+
+
+def test_a_range_too_short_for_the_filters_runs_without_them_and_says_so(cfg):
+    """Refusing the run would be worse: the filters are a default the user did not choose
+    for this range. But a backtest whose settings quietly differ from the live bot's is
+    not worth having, so the result carries the note."""
+    daily = cfg.model_copy(update={
+        "filters": cfg.filters.model_copy(update={"htf_factor": 24, "htf_period": 50}),
+    })
+    short = make_ohlcv(trending_series(n_down=60, n_up=60, n_down2=60))
+    result = run_backtest(short, daily, strategy_name="breakout", params={"entry_period": 20, "exit_period": 10})
+    assert result.notes and "entry filters were off" in result.notes[0]
+    assert str(len(short)) in result.notes[0]
+
+    from bot.backtest.__main__ import format_report
+
+    assert "NOTE" in format_report(result, show_trades=0)
+
+
+def test_a_range_too_short_for_the_strategy_still_fails(cfg):
+    with pytest.raises(ValueError, match="need at least"):
+        run_backtest(make_ohlcv([100.0] * 30), cfg, strategy_name="breakout",
+                     params={"entry_period": 20, "exit_period": 10})

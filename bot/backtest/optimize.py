@@ -40,6 +40,11 @@ OBJECTIVES: dict[str, Callable[[dict[str, Any]], float]] = {
     "return_over_drawdown": lambda m: m["total_return_pct"] / max(1.0, abs(m["max_drawdown_pct"])),
     # A missing profit factor means there were no losing trades at all: treat it as excellent.
     "profit_factor": lambda m: 10.0 if m.get("no_losing_trades") else (m.get("profit_factor") or 0.0),
+    # Money per trade. Ranking by this refuses to buy a win rate with a smaller average win.
+    "expectancy": lambda m: m.get("expectancy", 0.0),
+    # Win rate, for when that is genuinely what you are after. Kept honest by min_win_rate
+    # and min_trades: on its own it is the easiest metric in trading to fake.
+    "win_rate": lambda m: m.get("win_rate_pct", 0.0),
 }
 DEFAULT_OBJECTIVE = "return_over_drawdown"
 
@@ -157,9 +162,17 @@ class WalkForwardFold:
         }
 
 
-def _score(metrics: dict[str, Any], objective: str, min_trades: int) -> float:
-    """Score a result, refusing to reward a curve built on a handful of trades."""
+def _score(metrics: dict[str, Any], objective: str, min_trades: int, min_win_rate: float = 0.0) -> float:
+    """Score a result, refusing to reward a curve built on a handful of trades.
+
+    `min_win_rate` is a floor, not a goal: it throws away settings that win too rarely to
+    sit through, while the objective still decides which of the survivors is best. Ranking
+    by win rate alone would pick the one that takes a tiny profit every time and gives it
+    all back on the losers.
+    """
     if metrics.get("trades", 0) < min_trades:
+        return float("-inf")
+    if min_win_rate and metrics.get("win_rate_pct", 0.0) < min_win_rate:
         return float("-inf")
     fn = OBJECTIVES.get(objective, OBJECTIVES[DEFAULT_OBJECTIVE])
     value = fn(metrics)
@@ -184,6 +197,7 @@ def grid_search(
     strategy_name: str | None = None,
     objective: str = DEFAULT_OBJECTIVE,
     min_trades: int = 10,
+    min_win_rate: float = 0.0,
     sample: int | None = None,
     cash: float | None = None,
     workers: int | None = None,
@@ -213,7 +227,8 @@ def grid_search(
 
     candidates = [
         Candidate(params={k: v for k, v in r["params"].items() if k in (todo[0] if todo else {})},
-                  metrics=r["metrics"], score=_score(r["metrics"], objective, min_trades), error=r.get("error"))
+                  metrics=r["metrics"], score=_score(r["metrics"], objective, min_trades, min_win_rate),
+                  error=r.get("error"))
         for r in results
     ]
     candidates.sort(key=lambda c: c.score, reverse=True)
@@ -230,6 +245,7 @@ def walk_forward(
     strategy_name: str | None = None,
     objective: str = DEFAULT_OBJECTIVE,
     min_trades: int = 5,
+    min_win_rate: float = 0.0,
     sample: int | None = None,
     cash: float | None = None,
     workers: int | None = None,
@@ -262,7 +278,7 @@ def walk_forward(
         if progress:
             progress("train", i + 1, folds)
         ranked = grid_search(train, cfg, combos=combos, strategy_name=strategy_name, objective=objective,
-                             min_trades=min_trades, cash=cash_now, workers=workers)
+                             min_trades=min_trades, min_win_rate=min_win_rate, cash=cash_now, workers=workers)
         best = next((c for c in ranked if c.score > float("-inf")), None)
         if best is None:
             continue
@@ -365,6 +381,8 @@ def _cli(argv: list[str] | None = None) -> int:
     p.add_argument("--sample", type=int, default=60, help="random combinations to try (0 = the whole grid)")
     p.add_argument("--objective", choices=sorted(OBJECTIVES), default=DEFAULT_OBJECTIVE)
     p.add_argument("--min-trades", type=int, default=10)
+    p.add_argument("--min-win-rate", type=float, default=0.0,
+                   help="discard settings whose win rate is below this %% (a floor, not a goal)")
     p.add_argument("--workers", type=int, default=None)
     p.add_argument("--top", type=int, default=10)
     p.add_argument("--json", action="store_true")
@@ -381,7 +399,8 @@ def _cli(argv: list[str] | None = None) -> int:
             print(f"\r  {done}/{total} combinations", end="", file=sys.stderr, flush=True)
 
         ranked = grid_search(df, cfg, strategy_name=args.strategy, objective=args.objective,
-                             min_trades=args.min_trades, sample=sample, workers=args.workers, progress=tick)
+                             min_trades=args.min_trades, min_win_rate=args.min_win_rate, sample=sample,
+                             workers=args.workers, progress=tick)
         print(file=sys.stderr)
         if args.json:
             print(_json.dumps([c.to_dict() for c in ranked[: args.top]], indent=2, default=str))
@@ -402,8 +421,8 @@ def _cli(argv: list[str] | None = None) -> int:
         print(f"\r  fold {fold}/{total}: {phase}...      ", end="", file=sys.stderr, flush=True)
 
     out = walk_forward(df, cfg, folds=args.folds, train_ratio=args.train_ratio, strategy_name=args.strategy,
-                       objective=args.objective, min_trades=max(3, args.min_trades // 2), sample=sample,
-                       workers=args.workers, progress=wf_tick)
+                       objective=args.objective, min_trades=max(3, args.min_trades // 2),
+                       min_win_rate=args.min_win_rate, sample=sample, workers=args.workers, progress=wf_tick)
     print(file=sys.stderr)
     if args.json:
         print(_json.dumps(out, indent=2, default=str))

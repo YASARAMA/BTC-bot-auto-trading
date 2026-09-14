@@ -74,3 +74,26 @@ def test_mode_keeps_parameters_it_does_not_define():
                                               "params": {"trend_params": {"warmup_factor": 3}}}}, "balanced")
     trend = nested["strategy"]["params"]["trend_params"]
     assert trend["warmup_factor"] == 3 and trend["entry_period"] == 20
+
+
+def test_modes_carry_the_entry_filters_and_the_history_they_need():
+    """A mode that switches on a daily filter has to raise the candle window with it, or
+    the bot refuses to start and the mode is unusable."""
+    from bot.config import load_config
+    from bot.strategy.filters import EntryFilters
+
+    base = load_config("config.yaml").printable()
+    for mode in MODES:
+        cfg = BotConfig.model_validate(apply_mode(base, mode))
+        filters = EntryFilters(**cfg.filters.model_dump())
+        assert filters.warmup <= cfg.exchange.candle_history, f"{mode} cannot feed its own filters"
+    safe = BotConfig.model_validate(apply_mode(base, "safe"))
+    aggressive = BotConfig.model_validate(apply_mode(base, "aggressive"))
+    assert safe.filters.htf_factor and not aggressive.filters.htf_factor, "safe filters more than aggressive"
+    assert safe.filters.skip_weekends and aggressive.filters.skip_weekends
+    # Both ends use a time stop, for opposite reasons: safe is patient with it, aggressive
+    # wants the capital back quickly. Balanced leaves it off - it helped one sample file
+    # and not the other, which is not enough to make it a default.
+    balanced = BotConfig.model_validate(apply_mode(base, "balanced"))
+    assert safe.exits.time_stop_candles > aggressive.exits.time_stop_candles > 0
+    assert balanced.exits.time_stop_candles == 0
