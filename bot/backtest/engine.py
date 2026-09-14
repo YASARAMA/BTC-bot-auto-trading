@@ -61,6 +61,7 @@ def run_backtest(
     )
     store = StateStore(":memory:")
     risk_cfg = cfg.risk.model_copy(update={"kill_switch_file": ""})  # a stray file must not alter a backtest
+    filters_cfg = cfg.filters
     if name == "buy_hold":
         # The benchmark is not a risk-managed strategy: it is the answer to "what if I had
         # just bought and held", so it uses the whole account and needs no stop. Sizing it
@@ -69,6 +70,9 @@ def run_backtest(
             "allow_entry_without_stop": True, "max_position_pct": 100.0,
             "min_seconds_between_trades": 0.0, "min_confidence": 0.0,
         })
+        # Entry filters are off for it too: waiting for a rising daily trend before buying
+        # is a strategy, and then the benchmark is no longer the thing it is there to be.
+        filters_cfg = type(cfg.filters)()
     risk = RiskManager(risk_cfg, fee_rate=cfg.exchange.fee_rate, slippage_bps=cfg.exchange.slippage_bps)
     executor = OrderExecutor(
         exchange, store, symbol=symbol, strategy_name=strategy.name,
@@ -79,7 +83,8 @@ def run_backtest(
         wait_for_fill=False,  # the candle the order is placed in already decides its fate
     )
     engine = TradingEngine(
-        cfg=cfg, strategy=strategy, risk=risk, exchange=exchange, executor=executor, store=store,
+        cfg=cfg.model_copy(update={"filters": filters_cfg}), strategy=strategy, risk=risk, exchange=exchange,
+        executor=executor, store=store,
         notifier=Notifier(cfg.notify), clock=lambda: clock["now"], mode="backtest",
     )
 

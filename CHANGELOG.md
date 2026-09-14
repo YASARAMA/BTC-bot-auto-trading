@@ -29,6 +29,10 @@ Every entry is one released build. The app shows the newest entry after it updat
   A floor, not a goal.
 - **Trading modes carry all of it.** Safe filters hardest and is patient; Aggressive keeps
   the weekend rule and a short time stop; each mode raises the candle history it needs.
+- **Fixed: the benchmark was being filtered too.** With the daily filter on, buy-and-hold
+  waited for a rising daily trend before buying and reported 122% instead of 182%. Waiting
+  is a strategy, and then the benchmark is no longer the thing it exists to be, so entry
+  filters never apply to it.
 - **Fixed: a filter that cannot be fed.** A daily trend line needs weeks of hourly candles.
   The live bot refuses to start rather than answering "not ready" forever, the backtester
   widens its own window, and a backtest over a range too short for the filters runs without

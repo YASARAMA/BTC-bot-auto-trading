@@ -195,3 +195,10 @@ def test_the_benchmark_actually_holds_the_market():
     assert m["trades"] == 1, "one entry, one exit at the end of the data"
     assert m["total_return_pct"] == pytest.approx(m["buy_hold_return_pct"], rel=0.02)
     assert m["max_drawdown_pct"] < -5, "holding through a bear leg is not free"
+
+    # The shipped config filters entries. Waiting for a rising daily trend before buying is
+    # a strategy, and a benchmark that does that is no longer the thing it exists to be.
+    assert cfg.filters.htf_factor, "the default config does filter entries"
+    filtered = run_backtest(df, cfg.model_copy(update={"filters": cfg.filters.model_copy(
+        update={"htf_factor": 4, "skip_weekends": True})}), strategy_name="buy_hold", params={})
+    assert filtered.metrics["total_return_pct"] == pytest.approx(m["total_return_pct"], rel=1e-6)
