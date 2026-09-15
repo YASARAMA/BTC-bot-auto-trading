@@ -9,7 +9,7 @@ def test_load_config_defaults_and_overrides(tmp_path):
     cfg = load_config(p)
     assert cfg.exchange.symbol == "ETH/USDT" and cfg.exchange.base == "ETH" and cfg.exchange.quote == "USDT"
     assert cfg.risk.risk_per_trade_pct == 2.0 and cfg.risk.max_position_pct == 25.0
-    assert cfg.strategy.name == "ema_rsi"
+    assert cfg.strategy.name == "breakout"
 
 
 def test_unknown_keys_and_bad_values_rejected(tmp_path):

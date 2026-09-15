@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from bot.models import Action, Signal
+from bot.models import Action
 from bot.strategy import get_strategy
 from bot.strategy.ai import AiStrategy
 from tests.conftest import make_ohlcv, trending_series

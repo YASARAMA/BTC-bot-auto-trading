@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from bot.licensing import (
-    HASHES_FILE,
     KEY_RE,
     LicenseManager,
     generate_key,

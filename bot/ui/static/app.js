@@ -823,9 +823,21 @@
   $('gh-save').addEventListener('click', async (e) => { e.preventDefault(); try { await api('/api/secrets', { GITHUB_TOKEN: $('gh-token').value }); $('gh-token').value = ''; toast('GitHub token saved'); } catch (err) { showAlert(err.message); } });
 
   // ----- price chart -----
+  // key in the strategy's indicator frame -> colour, dash. Price-scale series only.
+  const PRICE_SERIES = [
+    ['ema_fast', 'emaFast', null], ['ema_slow', 'emaSlow', null], ['ema_trend', 'trend', [6, 4]],
+    ['channel_high', 'emaFast', null], ['channel_low', 'emaSlow', null],
+    ['bb_upper', 'band', [4, 3]], ['bb_mid', 'trend', [6, 4]], ['bb_lower', 'band', [4, 3]],
+  ];
+  const INDICATOR_LABELS = {
+    ema_fast: 'EMA fast', ema_slow: 'EMA slow', ema_trend: 'Trend EMA', channel_high: 'Channel high',
+    channel_low: 'Channel low', bb_upper: 'Band upper', bb_mid: 'Band middle', bb_lower: 'Band lower',
+    rsi: 'RSI', atr: 'ATR', adx: 'ADX',
+  };
   const C = new Proxy({}, { get: (_t, k) => ({
     up: themeColor('--up', '#0ca30c'), down: themeColor('--down', '#d03b3b'),
     emaFast: themeColor('--info', '#3987e5'), emaSlow: themeColor('--accent', '#d95926'),
+    band: themeColor('--text-3', '#8b98a8'), trend: themeColor('--warn', '#c79a2e'),
     grid: themeColor('--border', '#273241'), text: themeColor('--text-3', '#8b98a8'),
     last: themeColor('--text', '#e6edf3'), stop: themeColor('--down', '#d03b3b'),
     tp: themeColor('--up', '#0ca30c'), entry: themeColor('--info', '#3987e5'),
@@ -901,8 +913,14 @@
     });
     if (live) { ctx.fillStyle = C.text; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('forming', X(liveIdx), Y(live.h) - 4); ctx.font = '11px system-ui'; }
     // EMA lines
-    const line = (arr, color) => { if (!arr) return; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); let started = false; rows.forEach((r, i) => { const v = arr[start + i]; if (v == null) return; const x = X(i), y = Y(v); started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true; }); ctx.stroke(); };
-    if (showEma && d.indicators) { line(d.indicators.ema_fast, C.emaFast); line(d.indicators.ema_slow, C.emaSlow); }
+    const line = (arr, color, dash) => { if (!arr) return; ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash || []); ctx.beginPath(); let started = false; rows.forEach((r, i) => { const v = arr[start + i]; if (v == null) return; const x = X(i), y = Y(v); started ? ctx.lineTo(x, y) : ctx.moveTo(x, y); started = true; }); ctx.stroke(); ctx.setLineDash([]); };
+    // Every strategy returns its own indicators: EMAs, a Donchian channel, Bollinger bands.
+    // Only the ones measured in price belong on this panel (RSI, ATR and ADX are not).
+    if (showEma && d.indicators) {
+      PRICE_SERIES.forEach(([key, colorKey, dash]) => {
+        if (d.indicators[key]) line(d.indicators[key], C[colorKey], dash);
+      });
+    }
     // horizontal levels: position + last price
     const level = (p, color, label, dash) => { if (!p) return; const y = Y(p); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.setLineDash(dash); ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = color; ctx.fillRect(w - pad.r + 1, y - 8, pad.r - 2, 16); ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = 'bold 11px system-ui'; ctx.fillText(label, w - pad.r + 5, y); ctx.font = '11px system-ui'; };
     if (pos) { level(pos.stop_loss, C.stop, `SL ${fmt.money(pos.stop_loss, 0)}`, [5, 4]); level(pos.take_profit, C.tp, `TP ${fmt.money(pos.take_profit, 0)}`, [5, 4]); level(pos.entry_price, C.entry, `IN ${fmt.money(pos.entry_price, 0)}`, []); }
@@ -927,7 +945,11 @@
     ctx.save(); ctx.strokeStyle = '#8b98a8'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, L.priceTop); ctx.lineTo(x, L.h - L.pad.b); ctx.stroke(); ctx.restore();
     const g = (k) => d.indicators && d.indicators[k] ? d.indicators[k][L.start + i] : null;
     const chg = ((r[4] / r[1] - 1) * 100);
-    $('chart-tip').innerHTML = `<b>${fmt.time(r[0])}</b><br>O ${fmt.money(r[1])} &nbsp; H ${fmt.money(r[2])}<br>L ${fmt.money(r[3])} &nbsp; C <b class="${cls(chg)}">${fmt.money(r[4])}</b> (${fmt.pct(chg)})<br>Vol ${fmt.money(r[5], 1)}` + (g('ema_fast') != null ? `<br>EMA fast ${fmt.money(g('ema_fast'))} · slow ${fmt.money(g('ema_slow'))}<br>RSI ${g('rsi') == null ? '—' : g('rsi').toFixed(1)} · ATR ${fmt.money(g('atr'))}` : '');
+    const shown = Object.keys(d.indicators || {})
+      .filter((k) => g(k) != null && INDICATOR_LABELS[k])
+      .map((k) => `${INDICATOR_LABELS[k]} ${['rsi', 'adx'].includes(k) ? g(k).toFixed(1) : fmt.money(g(k))}`);
+    $('chart-tip').innerHTML = `<b>${fmt.time(r[0])}</b><br>O ${fmt.money(r[1])} &nbsp; H ${fmt.money(r[2])}<br>L ${fmt.money(r[3])} &nbsp; C <b class="${cls(chg)}">${fmt.money(r[4])}</b> (${fmt.pct(chg)})<br>Vol ${fmt.money(r[5], 1)}`
+      + (shown.length ? `<br>${shown.join(' · ')}` : '');
     const tip = $('chart-tip'); tip.classList.remove('hidden');
     const left = x + 14 + 190 > L.w ? x - 14 - 190 : x + 14; tip.style.left = `${left}px`; tip.style.top = `${Math.max(4, L.priceTop + 4)}px`;
   }

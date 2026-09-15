@@ -1,4 +1,3 @@
-import pandas as pd
 import pytest
 
 from bot.data.history import download_ohlcv, load_csv

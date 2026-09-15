@@ -141,7 +141,7 @@ class RegimeStrategy(Strategy):
         if signal.action == Action.BUY:
             self.owner = regime
             return Signal(Action.BUY, signal.confidence, f"[{regime}] {signal.reason}; adx={strength:.1f}",
-                          stop_loss=signal.stop_loss, take_profit=signal.take_profit)
+                          stop_loss=signal.stop_loss, take_profit=signal.take_profit, atr=signal.atr)
         if signal.action == Action.SELL:
             return Signal.hold(f"[{regime}] exit signal with no position; adx={strength:.1f}")
         return Signal.hold(f"[{regime}] {signal.reason}; adx={strength:.1f}")

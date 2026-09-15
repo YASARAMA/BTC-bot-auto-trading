@@ -148,7 +148,8 @@ class EmaRsiStrategy(Strategy):
             if stop <= 0.0:
                 return Signal.hold(f"computed stop {stop:.2f} is not positive; {detail}")
             why = "EMA cross up with RSI in range" + (f" ({', '.join(notes)})" if notes else "")
-            return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=take)
+            return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=take,
+                          atr=float(values["atr"]))
 
         if cross_down:
             return Signal(Action.SELL, 1.0, f"EMA cross down; {detail}")

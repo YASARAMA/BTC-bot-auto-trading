@@ -134,6 +134,7 @@ class MeanReversionStrategy(Strategy):
             if stop <= 0:
                 return Signal.hold(f"computed stop {stop:.2f} is not positive; {detail}")
             why = "closed below the lower band with RSI oversold" + (f" ({', '.join(notes)})" if notes else "")
-            return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=exit_level)
+            return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=exit_level,
+                          atr=atr_now)
 
         return Signal.hold(f"inside the bands; {detail}")

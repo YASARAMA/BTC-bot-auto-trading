@@ -522,10 +522,14 @@ class TradingEngine:
                 self.position.qty = total
                 self.position.fees_paid += order.fee
             else:
+                # The strategy measured the volatility on the entry candle and says so.
+                # Older signals (and a manual order) do not, so fall back to implying it
+                # from the stop distance - correct only when the stop multiplier sits at
+                # the top level of the parameters, which is why the signal carries it now.
                 atr = 0.0
-                if intent.stop_loss and self.cfg.strategy.params.get("atr_stop_mult"):
-                    # ATR implied by the stop the strategy asked for, so the exit rules can
-                    # use the same volatility measure without recomputing it.
+                if intent.atr and intent.atr > 0:
+                    atr = float(intent.atr)
+                elif intent.stop_loss and self.cfg.strategy.params.get("atr_stop_mult"):
                     atr = max(0.0, (fill_price - intent.stop_loss) / float(self.cfg.strategy.params["atr_stop_mult"]))
                 elif intent.stop_loss:
                     atr = max(0.0, fill_price - intent.stop_loss) / 2.0

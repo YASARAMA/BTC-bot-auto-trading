@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bot.models import Action, Signal
 from bot.strategy.base import Strategy, validate_frame
-from bot.strategy.ema_rsi import EmaRsiParams, EmaRsiStrategy
+from bot.strategy.ema_rsi import EmaRsiStrategy
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +132,6 @@ class AiStrategy(Strategy):
         last = df.iloc[-1]
         li = ind.iloc[-1]
         tail = df.tail(self.p.candles_in_prompt)
-        closes = tail["close"]
         vol_mean = float(df["volume"].tail(min(len(df), 720)).mean() or 0.0)
 
         def num(v: Any) -> float | None:
@@ -181,7 +180,7 @@ class AiStrategy(Strategy):
             if self.p.fallback_to_technical:
                 return Signal(technical.action, technical.confidence,
                               f"AI key missing, using technical signal: {technical.reason}",
-                              technical.stop_loss, technical.take_profit)
+                              technical.stop_loss, technical.take_profit, atr=technical.atr)
             return Signal.hold("AI strategy has no ANTHROPIC_API_KEY")
 
         snapshot = self.snapshot(df, context)
@@ -196,7 +195,7 @@ class AiStrategy(Strategy):
             if self.p.fallback_to_technical:
                 return Signal(technical.action, technical.confidence,
                               f"AI unavailable ({type(exc).__name__}), using technical signal: {technical.reason}",
-                              technical.stop_loss, technical.take_profit)
+                              technical.stop_loss, technical.take_profit, atr=technical.atr)
             return Signal.hold(f"AI unavailable: {type(exc).__name__}")
 
         self.last_call = {
@@ -268,7 +267,8 @@ class AiStrategy(Strategy):
         if take is not None and take <= close:
             take = None
             reason = f"{reason} [take profit dropped: it was not above the price]"
-        return Signal(Action.BUY, confidence, f"{prefix}: {reason}", stop_loss=stop, take_profit=take)
+        return Signal(Action.BUY, confidence, f"{prefix}: {reason}", stop_loss=stop, take_profit=take,
+                      atr=atr if atr > 0 else None)
 
     def describe(self) -> dict[str, Any]:
         return {**super().describe(), "available": self.available, "calls": self.calls, "failures": self.failures}

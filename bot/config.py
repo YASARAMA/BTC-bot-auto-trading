@@ -76,7 +76,7 @@ class ExchangeConfig(StrictModel):
 
 
 class StrategyConfig(StrictModel):
-    name: str = "ema_rsi"
+    name: str = "breakout"
     params: dict[str, Any] = Field(default_factory=dict)
 
 

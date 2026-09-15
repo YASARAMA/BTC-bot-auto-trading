@@ -398,3 +398,40 @@ def test_entry_filters_block_a_buy_but_never_an_exit(cfg, tmp_path):
         out = open_engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
     assert open_engine.position is None, "an exit is never filtered"
     assert out["order"]["side"] == "sell" and "filtered" not in out
+
+
+def test_the_exit_rules_use_the_atr_the_strategy_measured(cfg, tmp_path):
+    """Exit distances are multiples of the ATR at entry. It used to be inferred from the
+    stop distance and the strategy's atr_stop_mult, which is wrong for any strategy whose
+    multiplier is not a top-level parameter - the regime switch and the AI strategy."""
+    df = make_ohlcv([100.0] * 8, spread=0.0)
+    ts = df["ts"].tolist()
+    signal = Signal(Action.BUY, 1.0, "with atr", stop_loss=94.0, take_profit=120.0, atr=3.0)
+    strategy = ScriptedStrategy({ts[4]: signal})
+    clock = {"now": ts[0]}
+    # A config whose atr_stop_mult (2.0) disagrees with the real stop distance (6.0).
+    engine, exchange = build(cfg, StateStore(tmp_path / "s.sqlite"), strategy, lambda: clock["now"])
+    for i in range(5):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        exchange.set_price(price)
+        engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+
+    assert engine.position is not None
+    assert engine.position.atr_at_entry == pytest.approx(3.0), "the measured ATR, not 6.0/2.0"
+
+
+def test_without_a_reported_atr_the_old_inference_still_applies(cfg, tmp_path):
+    df = make_ohlcv([100.0] * 8, spread=0.0)
+    ts = df["ts"].tolist()
+    strategy = ScriptedStrategy({ts[4]: buy_signal(100.0, stop_pct=0.04)})  # stop 96, no atr
+    clock = {"now": ts[0]}
+    engine, exchange = build(cfg, StateStore(tmp_path / "s.sqlite"), strategy, lambda: clock["now"])
+    for i in range(5):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        exchange.set_price(price)
+        engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+    assert engine.position is not None
+    # cfg ships atr_stop_mult 2.0, so a 4-wide stop implies an ATR of 2.
+    assert engine.position.atr_at_entry == pytest.approx(2.0)

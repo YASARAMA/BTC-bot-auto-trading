@@ -217,6 +217,7 @@ class RiskManager:
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
             confidence=signal.confidence,
+            atr=signal.atr,
         )
 
     def protective_exit(

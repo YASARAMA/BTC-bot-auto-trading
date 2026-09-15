@@ -118,6 +118,7 @@ class BreakoutStrategy(Strategy):
                 return Signal.hold(f"computed stop {stop:.2f} is not positive; {detail}")
             take = close + self.p.atr_tp_mult * atr_now if self.p.atr_tp_mult else None
             why = f"broke the {self.p.entry_period}-candle high" + (f" ({', '.join(notes)})" if notes else "")
-            return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=take)
+            return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=take,
+                          atr=atr_now)
 
         return Signal.hold(f"inside the channel; {detail}")

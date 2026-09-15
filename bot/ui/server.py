@@ -24,6 +24,7 @@ log = logging.getLogger("bot.ui.server")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
+MAX_BODY_BYTES = 4 * 1024 * 1024  # a config file is kilobytes; anything larger is a mistake
 
 
 def _finite(value: Any) -> Any:
@@ -225,7 +226,8 @@ def make_handler(controller: BotController, token: str) -> type[BaseHTTPRequestH
         def _static(self, path: str) -> None:
             name = "index.html" if path in ("", "/") else path.lstrip("/")
             file = (STATIC_DIR / name).resolve()
-            if not str(file).startswith(str(STATIC_DIR.resolve())) or not file.is_file():
+            # is_relative_to, not a string prefix: "/static-evil" starts with "/static".
+            if not file.is_relative_to(STATIC_DIR.resolve()) or not file.is_file():
                 self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
                 return
             data = file.read_bytes()
@@ -266,8 +268,16 @@ def make_handler(controller: BotController, token: str) -> type[BaseHTTPRequestH
                 return
             body: dict[str, Any] = {}
             if method == "POST":
-                length = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(length) if length else b""
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "bad Content-Length"})
+                    return
+                if length > MAX_BODY_BYTES:
+                    self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                               {"error": f"body larger than {MAX_BODY_BYTES} bytes"})
+                    return
+                raw = self.rfile.read(length) if length > 0 else b""
                 if raw:
                     try:
                         body = json.loads(raw.decode("utf-8"))

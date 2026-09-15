@@ -34,8 +34,8 @@ from bot.strategy import STRATEGIES, get_strategy
 from bot.licensing import LicenseManager
 from bot.logging_utils import EventBufferHandler, log_event
 from bot.models import Side
-from bot.modes import DEFAULT_MODE, MODES, apply_mode, detect_mode, mode_list
-from bot.notify.notifier import Notifier as _Notifier  # noqa: F401  (used by _notify)
+from bot.modes import MODES, apply_mode, detect_mode, mode_list
+from bot.notify.notifier import Notifier
 from bot.notify.telegram_control import TelegramControl, Watchdog
 from bot.reports import analytics as trade_analytics, daily_summary, equity_csv, trades_csv
 from bot.main import Runtime, build_runtime, run_loop
@@ -372,7 +372,7 @@ class BotController:
         # One snapshot: the bot keeps cycling, so the counts and their total must be read
         # together or they disagree by a candle.
         decisions = dict(self.decisions)
-        rt, out = self.runtime, {"decisions": decisions, "recent": self.last_signals[-8:][::-1]}
+        out = {"decisions": decisions, "recent": self.last_signals[-8:][::-1]}
         try:
             cfg = self.load_cfg()
         except Exception:  # noqa: BLE001
@@ -381,14 +381,30 @@ class BotController:
         signal = last.get("signal") or {}
         ind: dict[str, Any] = {}
         reason = signal.get("reason") or ""
-        # "ema_fast=1 ema_slow=2 rsi=3 atr=4" appears in every technical reason string
+        # Every technical reason string carries its numbers as "name=value" pairs:
+        # "ema_fast=1 ema_slow=2 rsi=3 atr=4", or "close=9 channel=7.5-8.1 atr=0.2".
         for part in reason.replace(";", " ").split():
-            if "=" in part:
-                k, _, v = part.partition("=")
+            if "=" not in part:
+                continue
+            k, _, v = part.partition("=")
+            if "-" in v and v.count("-") == 1 and not v.startswith("-"):
+                low, _, high = v.partition("-")  # a range, like the Donchian channel
                 try:
-                    ind[k] = float(v)
+                    ind[f"{k}_low"], ind[f"{k}_high"] = float(low), float(high)
                 except ValueError:
                     continue
+                continue
+            if v.count("/") == 2:  # three levels, like the Bollinger bands
+                try:
+                    lo, mid, hi = (float(x) for x in v.split("/"))
+                except ValueError:
+                    continue
+                ind[f"{k}_low"], ind[f"{k}_mid"], ind[f"{k}_high"] = lo, mid, hi
+                continue
+            try:
+                ind[k] = float(v)
+            except ValueError:
+                continue
         gap = None
         if ind.get("ema_fast") and ind.get("ema_slow"):
             gap = (ind["ema_fast"] / ind["ema_slow"] - 1) * 100
@@ -406,9 +422,7 @@ class BotController:
             blockers.append(f"An entry filter is holding entries back: {last['filtered']}")
         if signal.get("reason", "").startswith("warming up"):
             blockers.append(signal["reason"].capitalize() + ". It needs a full history before it decides.")
-        waiting = (f"The strategy enters only when the fast EMA crosses above the slow EMA. "
-                   f"They are {abs(gap):.2f}% apart ({'fast above' if gap and gap > 0 else 'fast below'} slow), "
-                   f"so no crossover has happened yet.") if gap is not None else None
+        waiting = self._waiting_text(cfg.strategy.name, ind, gap)
         tf = cfg.exchange.timeframe
         out.update({
             "state": self.state, "timeframe": tf, "strategy": cfg.strategy.name, "mode": cfg.mode,
@@ -416,14 +430,50 @@ class BotController:
             "blockers": blockers, "waiting": waiting,
             "min_gap_minutes": round(cfg.risk.min_seconds_between_trades / 60),
             "candles_evaluated": sum(decisions.values()),
-            "hints": [
-                f"On {tf} candles an EMA crossover typically happens every few days. Fewer, longer candles mean fewer trades.",
-                "A shorter timeframe (5m or 15m in Settings) trades far more often, with more noise and more fees.",
-                "Aggressive mode enters on weaker signals and allows more trades per day.",
-                "Demo replays historical candles quickly, so you can watch the bot trade without waiting.",
-            ],
+            "hints": self._hints(cfg, tf, decisions),
         })
         return out
+
+    @staticmethod
+    def _waiting_text(strategy: str, ind: dict[str, Any], gap: float | None) -> str | None:
+        """What this particular strategy is waiting for, in its own terms."""
+        if strategy in ("ema_rsi", "ai") and gap is not None:
+            side = "fast above" if gap > 0 else "fast below"
+            return (f"The strategy enters only when the fast EMA crosses above the slow EMA. They are "
+                    f"{abs(gap):.2f}% apart ({side} slow), so no crossover has happened yet.")
+        close, high = ind.get("close"), ind.get("channel_high")
+        if strategy == "breakout" and close and high:
+            if close > high:
+                return (f"The last close ({close:,.2f}) did clear the channel top ({high:,.2f}). If no order "
+                        f"followed, the reason is in the decision counts above, not in the signal.")
+            away = (high / close - 1) * 100
+            return (f"It buys a close above the top of the price channel ({high:,.2f}). The last close was "
+                    f"{close:,.2f}, {away:.2f}% below it, so nothing has broken out yet.")
+        low = ind.get("band_low")
+        if strategy == "mean_reversion" and close and low:
+            away = (close / low - 1) * 100
+            return (f"It buys a close below the lower band ({low:,.2f}) with RSI oversold. The last close was "
+                    f"{close:,.2f}, {away:.2f}% above it, so there is no dip to buy yet.")
+        if strategy == "regime" and ind.get("adx") is not None:
+            return (f"It trend-follows when ADX is high and fades extremes when it is low. ADX is "
+                    f"{ind['adx']:.1f} right now, and it acts through whichever half that selects.")
+        if strategy == "buy_hold":
+            return "The benchmark buys once and then holds; there is nothing else to wait for."
+        return None
+
+    @staticmethod
+    def _hints(cfg: BotConfig, tf: str, decisions: dict[str, int]) -> list[str]:
+        hints = [
+            f"On {tf} candles a setup appears every few days. Fewer, longer candles mean fewer trades.",
+            "A shorter timeframe (5m or 15m in Settings) trades far more often, with more noise and more fees.",
+            "Aggressive mode enters on weaker signals and allows more trades per day.",
+            "Demo replays historical candles quickly, so you can watch the bot trade without waiting.",
+        ]
+        if decisions.get("entry filtered"):
+            hints.insert(0, f"{decisions['entry filtered']} entries were refused by the entry filters. "
+                            f"Turn them off under Settings > Entry filters to trade more often - "
+                            f"they exist to trade less and better.")
+        return hints
 
     def _run(self, cfg: BotConfig, secrets: Any, mode: str, replay: Path | None, replay_delay: float) -> None:
         rt: Runtime | None = None
@@ -474,11 +524,9 @@ class BotController:
         self.recent_alerts = (self.recent_alerts + [{"event": info.get("event"), "ts": None, "detail": text,
                                                      "label": latest.get("label"), "tag": latest.get("tag")}])[-30:]
         try:
-            from bot.notify.notifier import Notifier
-
             Notifier(self.load_cfg().notify, load_secrets(), prefix="[BTC Bot] ").send(text)
         except Exception:  # noqa: BLE001
-            pass
+            log.warning("update notification failed", exc_info=True)
 
     def start_updater(self) -> None:
         try:
@@ -757,7 +805,7 @@ class BotController:
         return dict(self.research)
 
     def _run_research(self, params: dict[str, Any]) -> None:
-        from bot.backtest.optimize import DEFAULT_GRID, expand_grid, grid_search, walk_forward
+        from bot.backtest.optimize import grid_search, walk_forward
 
         try:
             cfg = self.load_cfg()

@@ -1,11 +1,9 @@
 """Entry filters and the time stop: the two levers that raise the win rate honestly."""
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 from bot.config import BotConfig, FiltersConfig
-from bot.models import Action
 from bot.strategy.filters import EntryFilters, higher_timeframe, htf_trend_state
 from tests.conftest import TF_MS, T0, make_ohlcv, trending_series
 

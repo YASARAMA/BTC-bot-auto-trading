@@ -118,12 +118,17 @@ class EventBufferHandler(logging.Handler):
             self.handleError(record)
 
     def since(self, last_id: int, limit: int = 500, channel: str | None = None) -> list[dict[str, Any]]:
-        """Records newer than last_id. channel 'log' or 'debug' filters; None returns both."""
+        """Records newer than last_id. channel 'log' or 'debug' filters; None returns both.
+
+        The OLDEST matching records come first. Returning the newest instead would let a
+        burst larger than `limit` push the caller's cursor past everything in between, and
+        those lines would never be shown - exactly when the log matters most.
+        """
         with self._lock:
             items = [x for x in self.buffer if x["id"] > last_id]
         if channel in ("log", "debug"):
             items = [x for x in items if x.get("channel") == channel]
-        return items[-limit:]
+        return items[:limit]
 
 
 def log_event(logger: logging.Logger, event: str, level: int = logging.INFO, **fields: Any) -> None:

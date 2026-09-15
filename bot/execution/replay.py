@@ -52,8 +52,11 @@ class CsvMarketData(MarketData):
         frame = self.df.iloc[:end]
         if since is not None:
             frame = frame[frame["ts"] >= since]
-        if limit is not None:
-            frame = frame.iloc[:limit]
+            if limit is not None:
+                frame = frame.iloc[:limit]
+        elif limit is not None:
+            # Without `since`, an exchange returns the most recent `limit` candles.
+            frame = frame.iloc[-limit:]
         return frame[["ts", "open", "high", "low", "close", "volume"]].values.tolist()
 
     def fetch_ticker_price(self, symbol: str) -> float:

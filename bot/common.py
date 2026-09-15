@@ -17,7 +17,10 @@ def timeframe_to_ms(timeframe: str) -> int:
     tf = timeframe.strip().lower()
     if len(tf) < 2 or tf[-1] not in _UNIT_MS or not tf[:-1].isdigit():
         raise ValueError(f"unsupported timeframe: {timeframe!r}")
-    return int(tf[:-1]) * _UNIT_MS[tf[-1]]
+    ms = int(tf[:-1]) * _UNIT_MS[tf[-1]]
+    if ms <= 0:  # "0m" parses, and then every floor_ts and every loop divides by zero
+        raise ValueError(f"timeframe must be longer than zero: {timeframe!r}")
+    return ms
 
 
 def now_ms() -> int:

@@ -28,21 +28,21 @@ exchange:
   backoff_max_seconds: 60
 
 strategy:
-  name: ema_rsi
+  # breakout is the default because it is the only strategy that made money on both sample
+  # files, with a higher win rate than ema_rsi on both (51.6% vs 42.9%, 44.0% vs 37.2%).
+  # Switch to ema_rsi, mean_reversion, regime, buy_hold or ai in Settings.
+  name: breakout
   params:
-    ema_fast: 12
-    ema_slow: 26
-    rsi_period: 14
-    rsi_buy_min: 45          # do not buy without momentum
-    rsi_buy_max: 70          # do not buy into an overbought market
-    rsi_midline: 50          # RSI above this adds a confidence confirmation
+    entry_period: 20         # buy above the highest high of the last 20 candles
+    exit_period: 10          # sell below the lowest low of the last 10 candles
     atr_period: 14
     atr_stop_mult: 2.0       # stop loss = close - 2.0 * ATR
-    atr_tp_mult: 3.0         # take profit = close + 3.0 * ATR
-    trend_lookback: 5        # slow EMA rising over N candles adds a confidence confirmation
-    confidence_base: 0.5
-    confidence_per_confirmation: 0.25
-    warmup_factor: 3
+    atr_tp_mult: 0.0         # 0 = no fixed target; the channel exit closes the trade
+    trend_filter_period: 100 # only break out above this EMA; 0 turns the filter off
+    min_breakout_atr: 0.25   # the break must clear the channel by this much ATR
+    confidence_base: 0.55
+    confidence_per_confirmation: 0.2
+    warmup_factor: 2
 
 risk:
   risk_per_trade_pct: 1.0          # fixed fractional: 1% of equity at risk between entry and stop

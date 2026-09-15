@@ -30,6 +30,12 @@ class Signal:
     reason: str = ""
     stop_loss: float | None = None
     take_profit: float | None = None
+    # The volatility the strategy measured on this candle. The exit rules (trailing stop,
+    # breakeven, partial take profit, time stop) are all expressed in multiples of it, and
+    # deriving it back from the stop distance only works when the stop multiplier happens
+    # to sit at the top level of the strategy's parameters - which it does not for the
+    # regime switch or the AI strategy.
+    atr: float | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
@@ -89,6 +95,7 @@ class OrderIntent:
     stop_loss: float | None = None
     take_profit: float | None = None
     confidence: float = 0.0
+    atr: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

@@ -86,10 +86,10 @@ def test_config_roundtrip_and_validation(ui):
     assert code == 200 and data["config"]["risk"]["risk_per_trade_pct"] == 1.0 and "exchange:" in data["yaml"]
     cfg = data["config"]
     cfg["risk"]["risk_per_trade_pct"] = 2.0
-    cfg["strategy"]["params"]["ema_fast"] = 10
+    cfg["strategy"]["params"]["entry_period"] = 30
     code, saved = call(server, "/api/config", {"config": cfg})
     assert code == 200 and saved["config"]["risk"]["risk_per_trade_pct"] == 2.0
-    assert call(server, "/api/config")[1]["config"]["strategy"]["params"]["ema_fast"] == 10
+    assert call(server, "/api/config")[1]["config"]["strategy"]["params"]["entry_period"] == 30
     cfg["risk"]["risk_per_trade_pct"] = -1
     code, err = call(server, "/api/config", {"config": cfg})
     assert code == 400 and "risk_per_trade_pct" in err["error"]
@@ -184,8 +184,10 @@ def test_candles_endpoint_from_replay_and_from_exchange(ui):
     c.market_factory = lambda cfg: fake
     code, data = call(server, "/api/candles?limit=120")
     assert code == 200 and data["source"] == "exchange" and len(data["candles"]) == 120
-    assert data["symbol"] == "BTC/USDT" and set(data["indicators"]) >= {"ema_fast", "ema_slow", "rsi", "atr"}
-    assert len(data["indicators"]["ema_fast"]) == 120 and data["position"] is None
+    # The chart draws whatever the selected strategy computes, not a fixed set of EMAs.
+    assert data["symbol"] == "BTC/USDT"
+    assert set(data["indicators"]) >= {"channel_high", "channel_low", "atr"}, data["indicators"].keys()
+    assert len(data["indicators"]["channel_high"]) == 120 and data["position"] is None
     call(server, "/api/candles?limit=120")
     assert fake.calls == 1  # second call served from the cache
     # Running a replay: candles come from the bot's own feed window and carry its trades.
@@ -589,3 +591,55 @@ def test_watchdog_alerts_when_cycles_stop(ui):
     assert "resumed" in alerts[-1]
     running["on"] = False
     assert w.check(now=9_000_000) is None, "a stopped bot is not an emergency"
+
+
+def test_the_chart_follows_whichever_strategy_is_selected(ui):
+    """The overlay used to be hard-coded to two EMA lines, so selecting a strategy that
+    draws a channel or bands left the chart bare."""
+    from tests.test_feed import FakeMarket
+
+    root, c, server = ui
+    c.market_factory = lambda cfg: FakeMarket(make_ohlcv(trending_series(), spread=0.003))
+
+    cfg = call(server, "/api/config")[1]["config"]
+    cfg["strategy"] = {"name": "mean_reversion", "params": {"bb_period": 20, "trend_filter_period": 0}}
+    assert call(server, "/api/config", {"config": cfg})[0] == 200
+    bands = call(server, f"/api/candles?limit=120&_={time.time()}")[1]["indicators"]
+    assert {"bb_upper", "bb_mid", "bb_lower"} <= set(bands)
+
+    cfg["strategy"] = {"name": "ema_rsi", "params": {}}
+    assert call(server, "/api/config", {"config": cfg})[0] == 200
+    c.market_factory = lambda cfg: FakeMarket(make_ohlcv(trending_series(), spread=0.003))
+    emas = call(server, f"/api/candles?limit=120&_={time.time()}")[1]["indicators"]
+    assert {"ema_fast", "ema_slow", "rsi"} <= set(emas)
+
+
+def test_why_panel_speaks_the_selected_strategy(ui):
+    """The panel used to explain EMA crossovers whatever strategy was selected, which is
+    wrong for four of the six and confusing for the default."""
+    root, c, server = ui
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.02})
+    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 30, timeout=120.0)
+    why = call(server, "/api/why")[1]
+    assert why["strategy"] == "breakout"
+    assert why["waiting"] is None or "channel" in why["waiting"], why["waiting"]
+    assert not any("EMA crossover" in h for h in why["hints"]) or why["strategy"] in ("ema_rsi", "ai")
+    call(server, "/api/stop", {"wait": 10})
+
+
+def test_why_panel_counts_filtered_entries(ui):
+    root, c, server = ui
+    # Force every entry to be filtered, then check the panel says so rather than leaving
+    # the user to wonder why a clear signal produced nothing.
+    cfg = call(server, "/api/config")[1]["config"]
+    # ema_rsi actually fires on this replay, and a 99% ATR floor no market ever reaches
+    # turns every one of those entries into a filtered one.
+    cfg["strategy"] = {"name": "ema_rsi", "params": {"rsi_buy_min": 0, "rsi_buy_max": 100}}
+    cfg["filters"] = {**cfg["filters"], "htf_factor": 0, "skip_weekends": False, "min_atr_pct": 99.0}
+    assert call(server, "/api/config", {"config": cfg})[0] == 200
+    call(server, "/api/start", {"replay": "data/samples/synthetic.csv", "replay_delay": 0.02})
+    wait_for(lambda: call(server, "/api/status")[1]["cycles"] >= 60, timeout=120.0)
+    why = call(server, "/api/why")[1]
+    call(server, "/api/stop", {"wait": 10})
+    assert why["decisions"].get("entry filtered", 0) > 0, why["decisions"]
+    assert any("refused by the entry filters" in h for h in why["hints"])

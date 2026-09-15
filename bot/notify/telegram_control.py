@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
@@ -72,7 +71,10 @@ class TelegramControl:
 
     # ----- commands -------------------------------------------------------------------
     def handle(self, text: str) -> str:
-        command = (text or "").strip().split()[0].lower().lstrip("/").split("@")[0]
+        parts = (text or "").strip().split()
+        # A whitespace-only message used to raise IndexError here and knock the poller into
+        # its backoff loop, which is a strange way to answer "   ".
+        command = parts[0].lower().lstrip("/").split("@")[0] if parts else ""
         if command in ("help", "start_help", ""):
             return HELP
         handler = self.handlers.get(command)
