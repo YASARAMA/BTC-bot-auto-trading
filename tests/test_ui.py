@@ -4,6 +4,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -643,3 +644,28 @@ def test_why_panel_counts_filtered_entries(ui):
     call(server, "/api/stop", {"wait": 10})
     assert why["decisions"].get("entry filtered", 0) > 0, why["decisions"]
     assert any("refused by the entry filters" in h for h in why["hints"])
+
+
+def test_the_log_view_escapes_text_it_did_not_write():
+    """Log lines carry an exchange's error body and other outside text, and this page holds
+    the API token that can start live trading. A regression here is an XSS in the
+    dashboard, so the guard is on the source rather than on a browser."""
+    import re
+
+    js = (Path(__file__).resolve().parents[1] / "bot" / "ui" / "static" / "app.js").read_text(encoding="utf-8")
+    assert re.search(r"const esc = \(v\) =>", js), "the escaper itself"
+
+    # Only the string that actually reaches innerHTML matters: the pieces it is built from
+    # are escaped as a whole on the way out.
+    body = js[js.index("function fmtEvent"):]
+    body = body[: body.index("\n  }")]
+    returned = body[body.index("return `"):]
+    holes = re.findall(r"\$\{([^}]+)\}", returned)
+    assert holes, "fmtEvent interpolates something"
+    for hole in holes:
+        assert hole.strip().startswith("esc("), f"unescaped {hole!r} in the log renderer"
+
+    toast = js[js.index("function toast("):]
+    toast = toast[: toast.index("\n  }")]
+    for hole in re.findall(r"\$\{([^}]+)\}", toast):
+        assert hole.strip().startswith(("esc(", "kind")) or "?" in hole, f"unescaped {hole!r} in a toast"

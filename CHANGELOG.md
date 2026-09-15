@@ -2,6 +2,37 @@
 
 Every entry is one released build. The app shows the newest entry after it updates itself.
 
+## 0.10.0
+
+- **Breakout is the default strategy.** It is the only one that made money on both sample
+  files, and it wins more often than `ema_rsi` on both (51.6% vs 42.9%, 44.0% vs 37.2%).
+  Existing installations keep their own settings: pick a trading mode to move to the new
+  ones.
+- **Volume behind the break.** A breakout now has to trade at least 1.5× the channel's
+  average volume. On the two samples that took the win rate to **61.9%** and **45.9%** and
+  raised the profit per trade by about a fifth. Three further entry-quality settings
+  (close strength, multi-candle confirmation, a structural stop) ship off, because each
+  improved only one of the two files.
+- **Fixed: the watchdog and the daily report never notified.** A name imported under an
+  alias made every send raise, and the error was swallowed. Two safety features that had
+  never worked.
+- **Fixed: wrong ATR behind every exit rule for two strategies.** The trailing stop,
+  breakeven, partial take profit and time stop measure in ATR, which was inferred from the
+  stop distance - wrong whenever the stop multiplier is nested, as it is for the regime
+  switch and the AI strategy. The signal now carries the volatility it measured.
+- **Fixed: the chart only ever drew EMA lines,** so a strategy with a channel or bands
+  showed a bare chart. It now draws what the selected strategy computes.
+- **Fixed: "why no trades?" explained EMA crossovers** whatever strategy was selected, and
+  said nothing about entries the filters had refused.
+- **Fixed: a hostile log line could run as code in the dashboard.** Exchange error text is
+  now escaped everywhere it is displayed - the page holds the key that can start live
+  trading.
+- Smaller fixes: a whitespace-only Telegram message crashed the command poller; "0m"
+  passed as a timeframe and then divided by zero; the log view dropped records when more
+  than a page arrived at once; the replay served the oldest candles where an exchange
+  serves the newest; the local API now rejects oversized bodies and compares static paths
+  properly.
+
 ## 0.9.0
 
 **This release is about the win rate, and about what the win rate is worth.**

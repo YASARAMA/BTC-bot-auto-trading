@@ -346,7 +346,7 @@ Secrets never go in `config.yaml`. See [`.env.example`](.env.example):
 | Name | What it buys | Where it fails |
 | --- | --- | --- |
 | `ema_rsi` | The fast EMA crossing above the slow one while RSI sits in `[rsi_buy_min, rsi_buy_max]` | Choppy markets: it crosses back and forth |
-| `breakout` | A close above the highest high of the last `entry_period` candles; exits below the `exit_period` low | Ranges: every false break is a small loss |
+| `breakout` **(default)** | A close above the highest high of the last `entry_period` candles, on volume; exits below the `exit_period` low | Ranges: every false break is a small loss |
 | `mean_reversion` | A close below the lower Bollinger band with RSI oversold, but only while the long EMA is rising | Sustained downtrends: every dip keeps dipping |
 | `regime` | Whichever of the two above suits the market, chosen by ADX | Whipsaw regimes, where ADX flips around the thresholds |
 | `buy_hold` | Once, at the start | Nothing — that is the point: it is the benchmark to beat |
@@ -399,6 +399,21 @@ A filter that reads a daily trend needs weeks of hourly candles, so `exchange.ca
 has to be at least as long. Selecting a trading mode raises it for you, and both the live
 bot and the backtester refuse to run — loudly — rather than quietly answering "not ready"
 on every candle.
+
+### Entry quality inside the breakout
+
+Four settings decide which breaks are worth taking. Measured on both sample files, only
+the volume rule improved each of them, so only it is on by default:
+
+| Setting | What it asks | Measured |
+| --- | --- | --- |
+| `volume_min_ratio: 1.5` | The break must trade 1.5× the channel's average volume | Win rate 57.7% → **61.9%** and 44.0% → **45.9%**; profit per trade +19% and +20% |
+| `close_strength_min` | The breakout candle must close high in its own range | Helps the hit rate, costs return on one file |
+| `confirm_candles` | N consecutive closes must hold above the channel | Far fewer trades; better per trade, much lower total |
+| `stop_at_channel` | Stop under the channel (structure) instead of a fixed ATR distance | No measurable difference here; the ATR stop was already tighter |
+
+A break nobody trades is usually taken back. If a data file carries no volume at all, the
+filter stands aside instead of refusing every entry for the life of the file.
 
 ## The time stop
 

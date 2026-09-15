@@ -69,6 +69,7 @@ GRIDS: dict[str, dict[str, list[Any]]] = {
         "atr_stop_mult": [1.5, 2.0, 3.0],
         "min_breakout_atr": [0.0, 0.25, 0.5],
         "trend_filter_period": [0, 100, 200],
+        "volume_min_ratio": [0.0, 1.2, 1.5],
     },
     "mean_reversion": {
         "bb_period": [14, 20, 30],

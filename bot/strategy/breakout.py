@@ -26,6 +26,17 @@ class BreakoutParams(BaseModel):
     atr_tp_mult: float = Field(0.0, ge=0.0, description="0 means no fixed target: the channel exit closes it")
     trend_filter_period: int = Field(0, ge=0, description="only buy above this EMA; 0 turns the filter off")
     min_breakout_atr: float = Field(0.0, ge=0.0, description="require the break to clear the channel by this much ATR")
+    confirm_candles: int = Field(
+        1, ge=1, le=10, description="how many consecutive closes must hold above the channel before buying")
+    close_strength_min: float = Field(
+        0.0, ge=0.0, le=1.0,
+        description="where in its own range the breakout candle must close (0.8 = in the top fifth); 0 = off")
+    volume_min_ratio: float = Field(
+        0.0, ge=0.0, description="require volume at least this many times the channel average; 0 = off")
+    stop_at_channel: bool = Field(
+        False, description="put the stop under the exit channel (structure) instead of a fixed ATR distance")
+    stop_channel_buffer_atr: float = Field(
+        0.25, ge=0.0, description="how far under that channel low the structural stop sits")
     confidence_base: float = Field(0.55, ge=0.0, le=1.0)
     confidence_per_confirmation: float = Field(0.2, ge=0.0, le=1.0)
     warmup_factor: int = Field(2, ge=1)
@@ -104,18 +115,54 @@ class BreakoutStrategy(Strategy):
                     return Signal.hold(f"trend filter not ready; {detail}")
                 if close <= trend:
                     return Signal.hold(f"breakout below the {self.p.trend_filter_period}-period trend line; {detail}")
+
+            # A breakout that closes at the bottom of its own candle was sold into: the
+            # buyers were there and then they were not.
+            candle_high, candle_low = float(df["high"].iloc[-1]), float(df["low"].iloc[-1])
+            span = candle_high - candle_low
+            strength = (close - candle_low) / span if span > 0 else 1.0
+            if self.p.close_strength_min and strength < self.p.close_strength_min:
+                return Signal.hold(
+                    f"closed {strength:.0%} up its own candle, below the {self.p.close_strength_min:.0%} "
+                    f"required for a break worth buying; {detail}")
+
+            # Not every data source carries volume: some CSV exports have no column for it,
+            # and the loader fills zeros. A filter with nothing to measure has to stand
+            # aside, or it would silently refuse every entry for the life of the file.
+            channel_volume = float(df["volume"].iloc[-self.p.entry_period:].mean())
+            volume_known = channel_volume > 0
+            volume_ratio = float(df["volume"].iloc[-1]) / channel_volume if volume_known else 0.0
+            if self.p.volume_min_ratio and volume_known and volume_ratio < self.p.volume_min_ratio:
+                return Signal.hold(
+                    f"volume {volume_ratio:.2f}x the channel average, below the {self.p.volume_min_ratio:g}x "
+                    f"a real break usually brings; {detail}")
+
+            # A single close above the channel can be a wick that the next candle takes back.
+            if self.p.confirm_candles > 1:
+                needed = self.p.confirm_candles
+                closes = df["close"].iloc[-needed:]
+                levels = ind["channel_high"].iloc[-needed:]
+                if len(closes) < needed or not bool((closes.to_numpy() > levels.to_numpy()).all()):
+                    held = int((closes.to_numpy() > levels.to_numpy()).sum())
+                    return Signal.hold(f"held above the channel for {held} of {needed} candles; {detail}")
+
             confirmations = 0
             notes = []
             if margin > atr_now:
                 confirmations += 1
                 notes.append("break larger than one ATR")
-            if float(df["volume"].iloc[-1]) > float(df["volume"].iloc[-self.p.entry_period:].mean()):
+            if volume_known and volume_ratio > 1.0:
                 confirmations += 1
                 notes.append("volume above its channel average")
             confidence = min(1.0, self.p.confidence_base + confirmations * self.p.confidence_per_confirmation)
             stop = close - self.p.atr_stop_mult * atr_now
-            if stop <= 0:
-                return Signal.hold(f"computed stop {stop:.2f} is not positive; {detail}")
+            if self.p.stop_at_channel:
+                # The level the trade is wrong at is the channel it broke out of, not a
+                # distance in volatility units. Never wider than the ATR stop.
+                structural = low - self.p.stop_channel_buffer_atr * atr_now
+                stop = max(stop, structural) if structural < close else stop
+            if stop <= 0 or stop >= close:
+                return Signal.hold(f"computed stop {stop:.2f} is not usable; {detail}")
             take = close + self.p.atr_tp_mult * atr_now if self.p.atr_tp_mult else None
             why = f"broke the {self.p.entry_period}-candle high" + (f" ({', '.join(notes)})" if notes else "")
             return Signal(Action.BUY, confidence, f"{why}; {detail}", stop_loss=stop, take_profit=take,

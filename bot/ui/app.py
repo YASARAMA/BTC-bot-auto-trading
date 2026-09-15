@@ -43,7 +43,7 @@ from bot.ui.updater import Updater, Version, read_build_info
 
 log = logging.getLogger("bot.ui")
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d", "1w"]
 EXCHANGES = ["binance", "bybit", "okx", "kraken", "coinbase", "kucoin", "bitget", "gateio", "mexc", "htx"]
 

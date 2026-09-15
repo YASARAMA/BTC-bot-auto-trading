@@ -40,6 +40,10 @@ strategy:
     atr_tp_mult: 0.0         # 0 = no fixed target; the channel exit closes the trade
     trend_filter_period: 100 # only break out above this EMA; 0 turns the filter off
     min_breakout_atr: 0.25   # the break must clear the channel by this much ATR
+    volume_min_ratio: 1.5    # and must come with 1.5x the channel's average volume (0 = off)
+    close_strength_min: 0.0  # where in its own range the breakout candle must close; 0 = off
+    confirm_candles: 1       # consecutive closes required above the channel
+    stop_at_channel: false   # put the stop under the channel instead of a fixed ATR distance
     confidence_base: 0.55
     confidence_per_confirmation: 0.2
     warmup_factor: 2

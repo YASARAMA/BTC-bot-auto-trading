@@ -66,13 +66,18 @@
   });
 
   // ----- alerts & toasts -----
+  // Log lines carry text from outside this program: an exchange's error body, a rejection
+  // reason, a filename. This page holds the API token, so none of that may become markup.
+  const esc = (v) => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   function showAlert(text, kind = 'error', ms = 6000) {
     const el = $('alert'); el.textContent = text; el.className = `alert ${kind}`; el.classList.remove('hidden');
     clearTimeout(showAlert.t); if (ms) showAlert.t = setTimeout(() => el.classList.add('hidden'), ms);
   }
   function toast(title, body = '', kind = '') {
     const el = document.createElement('div'); el.className = `toast ${kind}`;
-    el.innerHTML = `<div class="t">${title}</div>${body ? `<div class="muted small">${body}</div>` : ''}`;
+    el.innerHTML = `<div class="t">${esc(title)}</div>${body ? `<div class="muted small">${esc(body)}</div>` : ''}`;
     $('toasts').appendChild(el);
     setTimeout(() => { el.classList.add('leaving'); setTimeout(() => el.remove(), 400); }, 6000);
   }
@@ -272,7 +277,8 @@
   function fmtEvent(e) {
     const skip = new Set(['id', 'ts', 'level', 'logger', 'msg', 'event', 'config', 'channel']);
     const rest = Object.entries(e).filter(([k]) => !skip.has(k)).map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ');
-    return `<span class="ts">${fmt.ts(e.ts)}</span> <b>${e.event || e.msg}</b> ${rest.length > 600 ? rest.slice(0, 600) + '…' : rest}`;
+    const trimmed = rest.length > 600 ? rest.slice(0, 600) + '…' : rest;
+    return `<span class="ts">${esc(fmt.ts(e.ts))}</span> <b>${esc(e.event || e.msg)}</b> ${esc(trimmed)}`;
   }
   function renderChannel(channel, events, reset = false) {
     const box = channel === 'log' ? $('log') : $('debug-log');
@@ -302,7 +308,7 @@
       const { trades } = await api('/api/trades?limit=500');
       $('trades-count').textContent = trades.length ? `${trades.length} trades · total P/L ${fmt.money(trades.reduce((a, t) => a + t.pnl, 0))}` : '';
       const tb = $('trades-table').querySelector('tbody');
-      tb.innerHTML = trades.length ? trades.slice().reverse().map((t) => `<tr><td>${fmt.time(t.entry_ts)}</td><td>${fmt.time(t.exit_ts)}</td><td class="num">${fmt.qty(t.qty)}</td><td class="num">${fmt.money(t.entry_price)}</td><td class="num">${fmt.money(t.exit_price)}</td><td class="num">${fmt.money(t.fees)}</td><td class="num ${cls(t.pnl)}">${fmt.money(t.pnl)}</td><td class="num ${cls(t.pnl)}">${fmt.pct(t.pnl_pct)}</td><td>${t.exit_reason}</td></tr>`).join('') : '<tr><td colspan="9" class="muted">No trades yet.</td></tr>';
+      tb.innerHTML = trades.length ? trades.slice().reverse().map((t) => `<tr><td>${fmt.time(t.entry_ts)}</td><td>${fmt.time(t.exit_ts)}</td><td class="num">${fmt.qty(t.qty)}</td><td class="num">${fmt.money(t.entry_price)}</td><td class="num">${fmt.money(t.exit_price)}</td><td class="num">${fmt.money(t.fees)}</td><td class="num ${cls(t.pnl)}">${fmt.money(t.pnl)}</td><td class="num ${cls(t.pnl)}">${fmt.pct(t.pnl_pct)}</td><td>${esc(t.exit_reason)}</td></tr>`).join('') : '<tr><td colspan="9" class="muted">No trades yet.</td></tr>';
     } catch (e) { showAlert(e.message); }
   }
 
@@ -417,7 +423,7 @@
     if (last.error) { $('ai-reason').textContent = `Last call failed: ${last.error}`; }
     else if (last.decision) {
       const d = last.decision;
-      $('ai-reason').innerHTML = `<span class="badge ${d.action}">${d.action}</span> <span class="muted">confidence ${(Number(d.confidence || 0) * 100).toFixed(0)}%</span><br>${d.reason || ''}`;
+      $('ai-reason').innerHTML = `<span class="badge ${esc(d.action)}">${esc(d.action)}</span> <span class="muted">confidence ${(Number(d.confidence || 0) * 100).toFixed(0)}%</span><br>${esc(d.reason || '')}`;
       $('ai-detail').textContent = `stop ${fmt.money(d.stop_loss)} · target ${fmt.money(d.take_profit)} · technical strategy said ${(last.technical || {}).action || '—'}`;
     } else if (sig && sig.reason && sig.reason.startsWith('AI')) { $('ai-reason').textContent = sig.reason; }
     else if (!ai.enabled) { $('ai-reason').textContent = 'The AI strategy is off. Turn it on with an Anthropic API key to let Claude decide.'; }
@@ -540,6 +546,11 @@
     'strategy.params.entry_period': { label: 'Breakout: buy above the high of N candles' },
     'strategy.params.exit_period': { label: 'Breakout: sell below the low of N candles' },
     'strategy.params.min_breakout_atr': { label: 'Breakout: minimum break size (× ATR)', help: '0 = accept any break' },
+    'strategy.params.volume_min_ratio': { label: 'Breakout: volume must be this × the average', help: 'a break nobody trades is usually taken back · 0 = off' },
+    'strategy.params.close_strength_min': { label: 'Breakout: close this far up its own candle', help: '0.75 = in the top quarter · 0 = off' },
+    'strategy.params.confirm_candles': { label: 'Breakout: closes required above the channel', help: '1 = act on the first one' },
+    'strategy.params.stop_at_channel': { label: 'Breakout: stop under the channel', help: 'structure instead of a fixed ATR distance; never wider' },
+    'strategy.params.stop_channel_buffer_atr': { label: 'Breakout: buffer under that channel (× ATR)' },
     'strategy.params.bb_period': { label: 'Bollinger period' }, 'strategy.params.bb_std': { label: 'Bollinger width (standard deviations)' },
     'strategy.params.exit_band': { label: 'Mean reversion: close at which band', type: 'select', options: ['middle', 'upper'] },
     'strategy.params.trend_slope_lookback': { label: 'Trend must have risen over (candles)' },
@@ -607,10 +618,10 @@
         if (typeof val === 'boolean') {
           input = document.createElement('input'); input.type = 'checkbox'; input.checked = val; lab.classList.add('check');
           lab.appendChild(input); const txt = document.createElement('span');
-          txt.innerHTML = `<span class="name">${name}</span>${help ? ` <span class="help">· ${help}</span>` : ''} <span class="help">(${path})</span>`; lab.appendChild(txt);
+          txt.innerHTML = `<span class="name">${esc(name)}</span>${help ? ` <span class="help">· ${esc(help)}</span>` : ''} <span class="help">(${esc(path)})</span>`; lab.appendChild(txt);
         } else {
           const options = spec.options || (spec.meta ? cfgMeta[spec.meta] : null);
-          lab.innerHTML = `<span class="name">${name}</span>`;
+          lab.innerHTML = `<span class="name">${esc(name)}</span>`;
           if (spec.type === 'select' && options && options.length) {
             input = document.createElement('select');
             options.forEach((o) => { const opt = document.createElement('option'); opt.value = o; opt.textContent = o; input.appendChild(opt); });
@@ -1210,8 +1221,8 @@
       const total = w.candles_evaluated || 0;
       $('why-count').textContent = total ? `${total} candle${total === 1 ? '' : 's'} evaluated` : '';
       const parts = [];
-      (w.blockers || []).forEach((b) => parts.push(`<div class="why-block">■ ${b}</div>`));
-      if (w.waiting && !(w.blockers || []).length) parts.push(`<div class="why-wait">${w.waiting}</div>`);
+      (w.blockers || []).forEach((b) => parts.push(`<div class="why-block">■ ${esc(b)}</div>`));
+      if (w.waiting && !(w.blockers || []).length) parts.push(`<div class="why-wait">${esc(w.waiting)}</div>`);
       const entries = Object.entries(w.decisions || {}).sort((a, b) => b[1] - a[1]);
       if (entries.length) {
         const label = {
@@ -1224,13 +1235,13 @@
           'AI not called': 'AI not asked (no technical setup)',
         };
         parts.push('<ul class="why-list">' + entries.map(([k, v]) =>
-          `<li><span>${label[k] || k}</span><b>${v}</b></li>`).join('') + '</ul>');
+          `<li><span>${esc(label[k] || k)}</span><b>${esc(v)}</b></li>`).join('') + '</ul>');
       }
       if (w.ema_gap_pct != null) {
         parts.push(`<div class="muted small" style="margin-top:8px">EMA gap ${w.ema_gap_pct > 0 ? '+' : ''}${w.ema_gap_pct}% · RSI ${w.indicators && w.indicators.rsi != null ? w.indicators.rsi.toFixed(1) : '—'} · ${w.timeframe} candles · ${w.mode} mode</div>`);
       }
       if (total && !((w.decisions || {})['order placed'])) {
-        parts.push('<ul class="why-hints">' + (w.hints || []).map((h) => `<li>${h}</li>`).join('') + '</ul>');
+        parts.push('<ul class="why-hints">' + (w.hints || []).map((h) => `<li>${esc(h)}</li>`).join('') + '</ul>');
       }
       $('why-body').innerHTML = parts.join('') || 'Start the bot to see what it is waiting for.';
     } catch (e) { /* the card is informational */ }
@@ -1286,7 +1297,6 @@
       else if (items.length) items[items.length - 1] += ' ' + t;
       else items.push(t);
     });
-    const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const render = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     if (!items.length) return `<p class="muted">${render(body)}</p>`;
     return '<ul>' + items.map((i) => `<li>${render(i)}</li>`).join('') + '</ul>';

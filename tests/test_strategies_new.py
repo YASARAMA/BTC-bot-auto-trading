@@ -407,3 +407,71 @@ def test_a_genuinely_wrong_value_still_stops_the_bot():
         get_strategy("ema_rsi", {"ema_fast": -5})
     with pytest.raises(ValueError, match="exit_period"):
         get_strategy("breakout", {"entry_period": 5, "exit_period": 20})
+
+
+# ------------------------------------------------- breakout entry quality
+
+
+def _breaking_frame(strength: float = 1.0, volume_mult: float = 1.0, candles: int = 60):
+    """A flat channel and then one candle that closes above it, shaped to order."""
+    closes = [100.0] * candles + [110.0]
+    df = make_ohlcv(closes, spread=0.0)
+    last = df.index[-1]
+    high, low = 112.0, 100.0
+    df.loc[last, "high"], df.loc[last, "low"] = high, low
+    df.loc[last, "close"] = low + strength * (high - low)
+    df.loc[last, "volume"] = 10.0 * volume_mult
+    return df
+
+
+def test_a_breakout_that_closes_at_the_bottom_of_its_candle_is_refused():
+    df = _breaking_frame(strength=0.2)
+    weak = BreakoutStrategy({"entry_period": 20, "exit_period": 10, "close_strength_min": 0.6})
+    strong = BreakoutStrategy({"entry_period": 20, "exit_period": 10})
+    refused = weak.on_candle(df)
+    assert refused.action == Action.HOLD and "up its own candle" in refused.reason
+    assert strong.on_candle(df).action == Action.BUY, "without the filter it is a plain breakout"
+    assert BreakoutStrategy({"entry_period": 20, "exit_period": 10, "close_strength_min": 0.6}).on_candle(
+        _breaking_frame(strength=0.9)).action == Action.BUY
+
+
+def test_a_breakout_on_thin_volume_is_refused():
+    quiet = _breaking_frame(volume_mult=0.5)
+    s = BreakoutStrategy({"entry_period": 20, "exit_period": 10, "volume_min_ratio": 1.2})
+    out = s.on_candle(quiet)
+    assert out.action == Action.HOLD and "channel average" in out.reason
+    assert s.on_candle(_breaking_frame(volume_mult=3.0)).action == Action.BUY
+
+
+def test_confirmation_waits_for_the_close_to_hold():
+    two = BreakoutStrategy({"entry_period": 20, "exit_period": 10, "confirm_candles": 2})
+    one_bar = _breaking_frame()
+    held = two.on_candle(one_bar)
+    assert held.action == Action.HOLD and "1 of 2 candles" in held.reason
+
+    # A second candle that also closes above the (still flat) channel completes it.
+    closes = [100.0] * 60 + [110.0, 111.0]
+    df = make_ohlcv(closes, spread=0.0)
+    assert two.on_candle(df).action == Action.BUY
+    assert BreakoutStrategy({"entry_period": 20, "exit_period": 10, "confirm_candles": 3}).on_candle(df).action == Action.HOLD
+
+
+def test_the_structural_stop_sits_under_the_channel_and_never_wider_than_the_atr_stop():
+    df = _breaking_frame()
+    atr_stop = BreakoutStrategy({"entry_period": 20, "exit_period": 10, "atr_stop_mult": 2.0}).on_candle(df)
+    structural = BreakoutStrategy({"entry_period": 20, "exit_period": 10, "atr_stop_mult": 2.0,
+                                   "stop_at_channel": True, "stop_channel_buffer_atr": 0.25}).on_candle(df)
+    assert atr_stop.action == structural.action == Action.BUY
+    assert structural.stop_loss >= atr_stop.stop_loss, "structure never widens the risk"
+    assert structural.stop_loss < float(df["close"].iloc[-1])
+
+
+def test_the_volume_filter_stands_aside_when_there_is_no_volume_data():
+    """Some CSV exports carry no volume column and the loader fills zeros. A filter with
+    nothing to measure must not refuse every entry for the life of the file."""
+    df = _breaking_frame()
+    df["volume"] = 0.0
+    s = BreakoutStrategy({"entry_period": 20, "exit_period": 10, "volume_min_ratio": 1.5})
+    out = s.on_candle(df)
+    assert out.action == Action.BUY, out.reason
+    assert "volume" not in out.reason.split(";")[0], "and it does not claim a confirmation it cannot see"
