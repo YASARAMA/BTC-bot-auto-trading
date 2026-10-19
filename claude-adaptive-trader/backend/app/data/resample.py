@@ -25,6 +25,7 @@ def resample(df: pd.DataFrame, from_tf: str, to_tf: str) -> pd.DataFrame:
     step = tf_ms(to_tf)
     per = step // tf_ms(from_tf)
     work = df[CANDLE_COLUMNS].copy()
+    work["ts"] = work["ts"].astype("int64")
     work["block"] = (work["ts"] // step) * step
     grouped = work.groupby("block", sort=True)
     out = pd.DataFrame({
@@ -54,10 +55,10 @@ def align_higher(base: pd.DataFrame, base_tf: str, higher: pd.DataFrame, higher_
             out[f"{prefix}{col}"] = float("nan")
         return out
     h_step = tf_ms(higher_tf)
-    left = pd.DataFrame({"close_time": base["ts"].to_numpy() + tf_ms(base_tf)})
+    left = pd.DataFrame({"close_time": base["ts"].to_numpy().astype("int64") + tf_ms(base_tf)})
     left["_order"] = range(len(left))
     right = higher[["ts", *columns]].copy()
-    right["close_time"] = right["ts"] + h_step
+    right["close_time"] = right["ts"].astype("int64") + h_step
     right = right.drop(columns="ts").sort_values("close_time")
     merged = pd.merge_asof(left.sort_values("close_time"), right, on="close_time", direction="backward",
                            tolerance=h_step * max_age_blocks, allow_exact_matches=True)
