@@ -1,0 +1,84 @@
+name: Claude Adaptive Trader
+
+# Tests the paper-only research platform in claude-adaptive-trader/. It runs only when that
+# project changes and is independent of the Windows bot workflow.
+on:
+  push:
+    paths:
+      - "claude-adaptive-trader/**"
+      - "data/samples/**"
+      - ".github/workflows/claude-adaptive-trader.yml"
+  pull_request:
+    paths:
+      - "claude-adaptive-trader/**"
+      - "data/samples/**"
+      - ".github/workflows/claude-adaptive-trader.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: claude-adaptive-trader/requirements.txt
+      - run: pip install -r claude-adaptive-trader/requirements.txt
+      - run: python -m pytest
+        working-directory: claude-adaptive-trader/backend
+
+  frontend:
+    name: Frontend typecheck, unit tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: claude-adaptive-trader/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: claude-adaptive-trader/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: Browser end-to-end tests
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Backend virtual environment
+        working-directory: claude-adaptive-trader
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: claude-adaptive-trader/frontend/package-lock.json
+      - name: Install and run
+        working-directory: claude-adaptive-trader/frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: claude-adaptive-trader/frontend/test-results
+          if-no-files-found: ignore

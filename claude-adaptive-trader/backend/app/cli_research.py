@@ -1,4 +1,5 @@
-"""Research commands: backtest, validate, final-test, and paper trading control of a running server."""
+"""Research commands: backtest, validate, selector-validate, final-test, and paper trading control of a
+running server."""
 from __future__ import annotations
 
 import argparse
@@ -64,6 +65,21 @@ def _validate(args: argparse.Namespace) -> int:
         req = ValidationRequest(strategy=args.strategy, params=json.loads(args.params or "{}"), pairs=args.pairs,
                                 timeframe=args.timeframe, exchange=args.exchange)
         _print(runner.validate(req, _Ctx(), created_by="cli"))
+        return 0
+    finally:
+        asyncio.run(svc.stop())
+
+
+def _selector_validate(args: argparse.Namespace) -> int:
+    from app.backtesting.runner import SelectorRequest
+
+    svc, runner = _runner(args)
+    try:
+        req = SelectorRequest(pairs=args.pairs, timeframe=args.timeframe, exchange=args.exchange)
+        result = runner.selector_validation(req, _Ctx(), created_by="cli")
+        _print(result)
+        for name, m in (result.get("single_strategies") or {}).items():
+            print(f"{'alone: ' + name:>22}: {m}")
         return 0
     finally:
         asyncio.run(svc.stop())
@@ -135,6 +151,10 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--params", default=None)
     scope(p)
     p.set_defaults(func=_validate)
+
+    p = sub.add_parser("selector-validate", help="walk-forward test of the adaptive selector itself")
+    scope(p)
+    p.set_defaults(func=_selector_validate)
 
     p = sub.add_parser("final-test", help="evaluate a validated version once on the frozen test set (logged)")
     p.add_argument("--version-id", type=int, required=True)

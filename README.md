@@ -11,6 +11,10 @@ unattended.
 > tested example of the plumbing, not an edge. Paper trade for weeks before you risk
 > real funds, and only risk what you can afford to lose.
 
+> **Also in this repository:** [`claude-adaptive-trader/`](claude-adaptive-trader/README.md), a separate,
+> paper-only research platform with a web interface (regime detection, four strategies, walk-forward
+> validation with a frozen test set, a centralized risk manager and simulated paper trading).
+
 ## What is in the box
 
 | Module | Responsibility |

@@ -1,0 +1,12 @@
+# Settings for the browser end-to-end tests: their own databases and reports under .e2e/
+# (deleted before every run), no Binance WebSocket, and a port of their own. Everything not
+# listed here uses the defaults of the configuration model.
+exchange:
+  websocket_enabled: false
+storage:
+  database: .e2e/trader.sqlite
+  market_database: .e2e/market.sqlite
+  imports_dir: .e2e/imports
+  reports_dir: .e2e/reports
+server:
+  port: 8765
