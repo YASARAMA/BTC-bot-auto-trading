@@ -57,11 +57,13 @@ def _hard_limits() -> dict[str, Any]:
 
 
 def _settings_payload(svc) -> dict[str, Any]:
+    effective = svc.settings.printable()
     return {
-        "effective": svc.settings.printable(),
+        "effective": effective,
         "file": svc.settings_store.base.printable(),
         "overrides": svc.settings_store.overrides(),
-        "editable": {k: sorted(v) for k, v in EDITABLE_SECTIONS.items()},
+        # Field order follows the configuration models, which group related settings.
+        "editable": {k: [f for f in effective[k] if f in v] for k, v in EDITABLE_SECTIONS.items()},
         "hard_limits": _hard_limits(),
         "config_hash": svc.settings.config_hash(),
         "secrets": {"anthropic_api_key_present": svc.anthropic_key_present()},
