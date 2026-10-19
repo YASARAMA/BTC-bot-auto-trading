@@ -133,3 +133,63 @@ class FakeWebSocket:
         if self.error:
             raise self.error
         raise StopAsyncIteration
+
+
+# ----- a scripted strategy for execution tests -------------------------------------------------
+from app.strategies.base import SignalFrame, Strategy, StrategyContext, StrategyParams  # noqa: E402
+
+
+class ScriptedParams(StrategyParams):
+    pass
+
+
+class ScriptedStrategy(Strategy):
+    """Emits exactly the entries and exits it is told to. Test double only."""
+
+    name = "scripted"
+    title = "Scripted test strategy"
+    code_version = "test"
+    hypothesis = "test double"
+    required_regimes = ("trend_up", "trend_down", "range", "high_volatility_breakout")
+    entry_rules = ("scripted entry",)
+    exit_rules = ("scripted exit",)
+    stop_rule = "scripted"
+    target_rule = "scripted"
+    Params = ScriptedParams
+    tunable = ()
+
+    def __init__(self, entries: dict[int, tuple[float, float | None]] | None = None, exits: set[int] | None = None,
+                 time_stop: int | None = None, invalidation: dict[int, float] | None = None) -> None:
+        super().__init__({})
+        self.entries = entries or {}
+        self.exits = exits or set()
+        self.time_stop = time_stop
+        self.invalid = invalidation or {}
+
+    def compute(self, f: pd.DataFrame, regime: pd.DataFrame, ctx: StrategyContext) -> SignalFrame:
+        n = len(f)
+        entry = pd.Series([i in self.entries for i in range(n)], index=f.index)
+        stop = pd.Series([self.entries.get(i, (np.nan, None))[0] for i in range(n)], index=f.index, dtype="float64")
+        target = pd.Series([self.entries[i][1] if i in self.entries and self.entries[i][1] is not None else np.nan
+                            for i in range(n)], index=f.index, dtype="float64")
+        inval = pd.Series([self.invalid.get(i, np.nan) for i in range(n)], index=f.index, dtype="float64")
+        ex = pd.Series([i in self.exits for i in range(n)], index=f.index)
+        return SignalFrame(entry=entry, stop=stop, target=target, invalidation=inval,
+                           confidence=pd.Series(0.7, index=f.index), exit_signal=ex,
+                           exit_reason=pd.Series(["scripted exit" if i in self.exits else "" for i in range(n)],
+                                                 index=f.index), conditions={"scripted entry": entry})
+
+    def time_stop_bars(self) -> int | None:
+        return self.time_stop
+
+
+def bars_frame(rows: list[tuple[float, float, float, float, float]], *, start: int = 1_700_000_000_000,
+               step: int = 900_000, atr: float = 1.0) -> pd.DataFrame:
+    """Candles from (open, high, low, close, volume) tuples, with a constant ATR column."""
+    start -= start % step
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close", "volume"])
+    df.insert(0, "ts", start + np.arange(len(df), dtype="int64") * step)
+    df["atr"] = atr
+    df["h1h_trend"] = 1.0
+    df["h4h_trend"] = 1.0
+    return df

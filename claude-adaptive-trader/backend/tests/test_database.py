@@ -96,8 +96,11 @@ def test_one_open_position_per_pair_enforced_by_schema(tmp_path) -> None:
         " VALUES ('s', 0, 0, 'running', 'replay', 'adaptive', '[]', '15m', 'binance', 1, 1, 1, 1, 0, '{}')")
     row = ("s", "BTC/USDT", "open", 1.0, 100.0, 0, 0.1, 0.0, 90.0, 10.0, "A", "A-1", "trend_up", 0, 100.0, 100.0)
     sql = ("INSERT INTO positions (session_id, pair, status, qty, entry_price, entry_ts, entry_fee, entry_slippage,"
-           " stop_price, initial_risk, strategy, strategy_version, regime, signal_ts, high_water, low_water)"
-           " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    db.execute(sql, row)
+           " stop_price, initial_risk, strategy, strategy_version, regime, signal_ts, high_water, low_water,"
+           " position_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    db.execute(sql, (*row, "k1"))
     with pytest.raises(sqlite3.IntegrityError):
-        db.execute(sql, row)
+        db.execute(sql, (*row, "k2"))          # a second open position in the same pair
+    closed = list(row)
+    closed[2] = "closed"
+    db.execute(sql, (*closed, "k3"))           # closed positions are not limited

@@ -16,6 +16,7 @@ from app.data.binance_client import BinancePublicClient
 from app.data.historical_store import CandleStore
 from app.data.live_feed import LiveFeed
 from app.data.market_data import MarketDataService
+from app.execution.paper_trader import PaperTrader
 from app.monitoring.health import HealthMonitor
 from app.monitoring.logging import configure_logging, get_logger, shutdown_logging
 from app.storage.database import Database
@@ -47,6 +48,11 @@ class Services:
         self.live_feed = LiveFeed(lambda: self.settings, self.market, connect=ws_connect)
         self.health.register("market_data", self._market_probe)
 
+        # Paper trading.
+        self.paper = PaperTrader(lambda: self.settings, self.db, self.market, self.health, self.bus,
+                                 strategy_params=self.strategy_params, selector_factory=None)
+        self.health.register("paper_engine", self._paper_probe)
+
     # ----- settings ----------------------------------------------------------------------
     @property
     def settings(self) -> Settings:
@@ -64,9 +70,11 @@ class Services:
         self.bus.bind(asyncio.get_running_loop())
         if self.start_background:
             self.live_feed.start()
+            self.paper.restore()
         log.info("services started (background tasks %s)", "on" if self.start_background else "off")
 
     async def stop(self) -> None:
+        self.paper.shutdown()
         await self.live_feed.stop()
         self.jobs.shutdown()
         log.info("services stopped")
@@ -74,7 +82,25 @@ class Services:
         self.db.close()
         self.market_db.close()
 
+    def strategy_params(self, name: str) -> dict[str, Any]:
+        """Parameters for paper trading: the approved version if there is one, else the defaults."""
+        row = self.db.query_one("SELECT params FROM strategy_versions WHERE strategy = ? AND status = 'approved'"
+                                " ORDER BY approved_at DESC LIMIT 1", (name,))
+        if row:
+            from app.storage.database import from_json
+
+            return from_json(row["params"], {}) or {}
+        return {}
+
     # ----- probes ------------------------------------------------------------------------
+    def _paper_probe(self) -> dict[str, Any]:
+        st = self.paper.status()
+        status = st["status"]
+        health = "error" if status == "error" else ("ok" if status in {"running", "idle", "paused", "stopped"}
+                                                    else "degraded")
+        return {"status": health, "engine_status": status, "kill_switch": bool(st["kill_switch"].get("on")),
+                "last_error": st.get("last_error")}
+
     def _market_probe(self) -> dict[str, Any]:
         st = self.market.status()
         return {"status": st["status"], "rest_reachable": st["rest"].get("reachable"),

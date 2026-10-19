@@ -192,7 +192,11 @@ CREATE TABLE paper_sessions (
     started_at INTEGER,
     stopped_at INTEGER,
     last_error TEXT,
-    note TEXT
+    note TEXT,
+    confirm_timeframes TEXT NOT NULL DEFAULT '[]',
+    breaker_state TEXT,
+    strategy_params TEXT,
+    archived INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE paper_cursors (
@@ -225,7 +229,13 @@ CREATE TABLE orders (
     filled_ts INTEGER,
     position_id INTEGER,
     reason TEXT,
-    reject_reason TEXT
+    reject_reason TEXT,
+    stop_price REAL,
+    take_profit REAL,
+    invalidation REAL,
+    time_stop_bars INTEGER,
+    environment TEXT,
+    exit_reason TEXT
 );
 CREATE INDEX idx_orders_session ON orders (session_id, created_ts);
 
@@ -252,8 +262,15 @@ CREATE TABLE positions (
     bars_held INTEGER NOT NULL DEFAULT 0,
     high_water REAL NOT NULL,
     low_water REAL NOT NULL,
+    invalidation REAL,
+    position_key TEXT NOT NULL,
+    qty_exited REAL NOT NULL DEFAULT 0,
+    exit_value REAL NOT NULL DEFAULT 0,
+    exit_fees REAL NOT NULL DEFAULT 0,
+    exit_slippage REAL NOT NULL DEFAULT 0,
     closed_ts INTEGER,
-    exit_reason TEXT
+    exit_reason TEXT,
+    UNIQUE (session_id, position_key)
 );
 CREATE UNIQUE INDEX idx_positions_one_open ON positions (session_id, pair) WHERE status = 'open';
 
