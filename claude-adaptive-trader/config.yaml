@@ -77,8 +77,11 @@ regime:
   rank_window: 500               # candles used for volatility percentiles
   trend_adx_min: 22.0
   range_adx_max: 18.0
-  trend_slope_min_atr: 1.0       # EMA-mid change over slope_lookback, in ATR units
-  range_slope_max_atr: 0.6
+  # EMA-mid change over slope_lookback, in ATR units. Calibrated for label coverage, not for
+  # returns: at 1.0 a trend needed price ~3 ATR above the mid EMA on average, which the
+  # pullback that strategy A waits for cannot satisfy.
+  trend_slope_min_atr: 0.6
+  range_slope_max_atr: 0.6       # a flat mid EMA never overlaps a rising one
   squeeze_percentile: 25.0       # Bollinger width below this percentile = compressed
   expansion_percentile: 75.0
   expansion_range_atr: 1.5       # a candle this many ATR wide counts as expansion

@@ -42,7 +42,7 @@ export function Dialog({ open, onClose, title, children, footer, width = 480 }: 
   );
 }
 
-export function ConfirmDialog({ open, onClose, onConfirm, title, children, confirmLabel = "Confirm", danger, requireNote, busy }: {
+export function ConfirmDialog({ open, onClose, onConfirm, title, children, confirmLabel = "Confirm", danger, requireNote, busy, confirmDisabled }: {
   open: boolean;
   onClose: () => void;
   onConfirm: (note: string) => void;
@@ -52,6 +52,7 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, children, confi
   danger?: boolean;
   requireNote?: string;
   busy?: boolean;
+  confirmDisabled?: boolean;
 }) {
   const [note, setNote] = useState("");
   useEffect(() => {
@@ -68,7 +69,7 @@ export function ConfirmDialog({ open, onClose, onConfirm, title, children, confi
           <Button
             variant={danger ? "danger" : "primary"}
             loading={busy}
-            disabled={!!requireNote && note.trim().length < 3}
+            disabled={confirmDisabled || (!!requireNote && note.trim().length < 3)}
             onClick={() => onConfirm(note.trim())}
           >
             {confirmLabel}

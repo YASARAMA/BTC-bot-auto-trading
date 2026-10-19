@@ -417,7 +417,7 @@ class PaperTrader:
         if nxt is None:
             return False
         items = []
-        for pair, ps in self._replay_states.items():
+        for ps in self._replay_states.values():
             i = ps.index.get(nxt)
             if i is not None:
                 items.append((ps, i))

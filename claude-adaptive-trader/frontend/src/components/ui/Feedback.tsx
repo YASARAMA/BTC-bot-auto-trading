@@ -22,15 +22,16 @@ export function Spinner({ className }: { className?: string }) {
   return <LoaderCircle className={cn("size-4 animate-spin text-muted", className)} />;
 }
 
-export function EmptyState({ title, children, icon, action, className }: {
+export function EmptyState({ title, children, icon, action, className, compact }: {
   title: string;
   children?: ReactNode;
   icon?: ReactNode;
   action?: ReactNode;
   className?: string;
+  compact?: boolean;
 }) {
   return (
-    <div className={cn("flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border px-6 py-10 text-center", className)}>
+    <div className={cn("flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border px-6 text-center", compact ? "py-5" : "py-10", className)}>
       <div className="text-faint">{icon ?? <Inbox className="size-6" />}</div>
       <div className="text-sm font-medium text-text">{title}</div>
       {children && <div className="max-w-md text-xs leading-5 text-muted">{children}</div>}

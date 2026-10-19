@@ -22,7 +22,11 @@ export function TopBar({ title, description, onMenu, menuButton }: { title: stri
   const liveState = useLiveState();
   const extras = useStatusExtras();
 
-  const backendTone: Tone = health.isError ? "down" : health.data?.status === "ok" ? "up" : health.data?.status === "degraded" ? "warn" : health.data ? "down" : "neutral";
+  // Market data has its own badge, so the system badge reflects the backend's own components.
+  const own = Object.entries(health.data?.components ?? {}).filter(([k]) => k !== "market_data").map(([, c]) => c.status);
+  const system = own.includes("error") ? "error" : own.includes("degraded") ? "degraded" : health.data ? "ok" : null;
+  const backendTone: Tone = health.isError ? "down" : system === "ok" ? "up" : system === "degraded" ? "warn" : system ? "down" : "neutral";
+  const healthTitle = health.data ? Object.entries(health.data.components).map(([k, c]) => `${k}: ${c.status}`).join(" · ") : "";
   const m = market.data;
   const binanceLive = !!m && (m.websocket.connected || m.rest.reachable === true);
   const binanceTone: Tone = !m ? "neutral" : binanceLive && m.status === "ok" ? "up" : binanceLive ? "warn" : "down";
@@ -56,9 +60,9 @@ export function TopBar({ title, description, onMenu, menuButton }: { title: stri
           </Badge>
         </Link>
         <Link to="/logs">
-          <Badge tone={backendTone} title={health.isError ? "Backend unreachable" : `System health: ${health.data?.status ?? "…"}`}>
+          <Badge tone={backendTone} title={health.isError ? "Backend unreachable" : healthTitle}>
             <Server className="size-3" />
-            <span className="hidden md:inline">{health.isError ? "Backend down" : `System ${health.data?.status ?? "…"}`}</span>
+            <span className="hidden md:inline">{health.isError ? "Backend down" : `System ${system ?? "…"}`}</span>
           </Badge>
         </Link>
         <span className={liveState === "open" ? "size-2 rounded-full bg-up" : liveState === "connecting" ? "size-2 animate-pulse rounded-full bg-warn" : "size-2 rounded-full bg-down"} title={`Live connection to backend: ${liveState}`} />

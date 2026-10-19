@@ -125,6 +125,11 @@ export function toneOf(v: number | null | undefined): "up" | "down" | "flat" {
   return v > 0 ? "up" : "down";
 }
 
+export function toneClass(v: number | null | undefined, flat = ""): string {
+  const t = toneOf(v);
+  return t === "up" ? "text-up" : t === "down" ? "text-down" : flat;
+}
+
 export function titleCase(s: string): string {
   return s.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }

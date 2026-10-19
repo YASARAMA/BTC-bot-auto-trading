@@ -32,7 +32,10 @@ def status(svc=Depends(services)) -> dict[str, Any]:
         "hard_limits": {"risk_per_trade_pct": limits.HARD_MAX_RISK_PER_TRADE_PCT,
                         "open_risk_pct": limits.HARD_MAX_OPEN_RISK_PCT,
                         "daily_loss_pct": limits.HARD_MAX_DAILY_LOSS_PCT,
-                        "drawdown_pct": limits.HARD_MAX_DRAWDOWN_PCT},
+                        "drawdown_pct": limits.HARD_MAX_DRAWDOWN_PCT,
+                        "position_pct": limits.HARD_MAX_POSITION_PCT,
+                        "total_exposure_pct": limits.HARD_MAX_TOTAL_EXPOSURE_PCT,
+                        "positions": limits.HARD_MAX_POSITIONS},
         "checks": list(CHECKS),
         "utilization": {
             "equity": equity,

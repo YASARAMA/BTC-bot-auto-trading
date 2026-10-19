@@ -4,8 +4,8 @@ import { get } from "../../lib/api";
 
 type PaperStatusLite = { status: "running" | "paused" | "stopped" | "error" | "idle"; kill_switch: boolean };
 
-// Bot state and kill switch for the top bar. Until the paper engine endpoint exists this simply
-// shows nothing rather than a guessed state.
+// Bot state and kill switch for the top bar. While the backend cannot be reached it shows
+// nothing rather than a guessed state.
 export function useStatusExtras(): { botStatus: string | null; botTone: Tone; killSwitch: boolean } {
   const q = useQuery({
     queryKey: ["paper-status-lite"],

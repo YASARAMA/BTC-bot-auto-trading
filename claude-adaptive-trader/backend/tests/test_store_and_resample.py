@@ -73,7 +73,7 @@ def test_align_higher_has_no_lookahead() -> None:
     assert aligned["h_marker"].iloc[4:7].tolist() == [0, 0, 0]
     assert aligned["h_marker"].iloc[7] == 1
     # Each base row only sees hourly blocks that closed at or before its own close.
-    for i, row in aligned.iterrows():
+    for _, row in aligned.iterrows():
         if pd.notna(row["h_marker"]):
             block_close = hourly.loc[int(row["h_marker"]), "ts"] + H1
             assert block_close <= row["ts"] + M15

@@ -1,11 +1,10 @@
 """Backtester, walk-forward, metrics, statistics, gates, datasets and reports."""
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from app.backtesting import datasets
 from app.backtesting.engine import END_OF_PERIOD, BacktestSpec, run_backtest
@@ -15,7 +14,7 @@ from app.backtesting.runner import BacktestRequest, FinalTestRequest, ResearchRu
 from app.backtesting.stats import bootstrap
 from app.backtesting.walk_forward import make_windows
 from app.config import Settings
-from app.core.errors import Conflict, TestSetLocked
+from app.core.errors import Conflict, DataUnavailable, TestSetLocked
 from app.research.experiment_tracker import ExperimentTracker
 from tests.fakes import ScriptedStrategy, synthetic_candles
 
@@ -214,7 +213,7 @@ def test_backtest_experiment_is_recorded_with_metadata(research, tmp_path) -> No
 
 
 def test_research_requests_cannot_select_the_test_segment() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         BacktestRequest(strategy="momentum_breakout", segment="test")
 
 
@@ -247,7 +246,7 @@ def test_final_test_is_logged(research) -> None:
 
 def test_failed_experiments_are_kept(research) -> None:
     runner, tracker, svc = research
-    with pytest.raises(Exception):
+    with pytest.raises(DataUnavailable):
         runner.backtest(BacktestRequest(strategy="momentum_breakout", pairs=["ETH/USDT"], segment="development"))
     # the dataset could not be registered, so nothing was created; a failure after creation is kept:
     eid = tracker.create(kind="backtest", settings=svc.settings, request={}, strategies=[], pairs=[], timeframe="15m",

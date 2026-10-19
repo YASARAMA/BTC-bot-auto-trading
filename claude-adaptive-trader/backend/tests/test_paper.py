@@ -1,9 +1,9 @@
 """Paper trading: replay end to end, restart recovery, duplicates, kill switch, live freshness."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from app.config import Settings
@@ -154,8 +154,12 @@ def test_kill_switch_blocks_entries_and_cancels_pending(env: Env) -> None:
     run_to_end(t)
     assert env.db.scalar("SELECT COUNT(*) FROM orders WHERE session_id = ? AND side = 'buy' AND status = 'filled'",
                          (sid,)) == 0
-    rejected = env.db.query("SELECT reason FROM decisions WHERE session_id = ? AND action = 'enter'", (sid,))
-    assert rejected and all("execution_engine_health" in r["reason"] for r in rejected)
+    rejected = env.db.query("SELECT accepted, checks FROM decisions WHERE session_id = ? AND action = 'enter'", (sid,))
+    assert rejected and not any(r["accepted"] for r in rejected)
+    for r in rejected:
+        # Other checks may fail first; the kill switch check fails on every entry regardless.
+        health = {c["name"]: c for c in json.loads(r["checks"])}["execution_engine_health"]
+        assert health["passed"] is False and "kill switch" in health["detail"]
     assert t.status()["kill_switch"]["on"] is True
     t.set_kill_switch(False, actor="test", reason="done")
     assert t.status_lite()["kill_switch"] is False

@@ -189,7 +189,7 @@ export function SettingsPage() {
           </dl>
         </Card>
         <Card title="Display" subtitle="Stored in this browser only">
-          <Field label="Time zone for dates and the chart axis" hint="All data is stored in UTC.">
+          <Field label="Time zone for dates and the chart axis" hint="All data is stored in UTC." group>
             <Segmented
               value={tz}
               onChange={(v) => {

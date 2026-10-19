@@ -105,7 +105,7 @@ def test_research_runs_record_breaker_blocks_without_enforcing() -> None:
 
 
 def test_leverage_or_shorting_refused_at_construction() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="leverage"):
         RiskManager(RiskConfig.model_construct(**{**RISK.model_dump(), "leverage_enabled": True}), COSTS)
 
 

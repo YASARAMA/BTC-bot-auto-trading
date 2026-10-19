@@ -115,3 +115,30 @@ def test_adaptive_paper_mode_abstains_without_approved_strategies(client: TestCl
     assert st["stats"]["decisions"].get("enter", 0) == 0
     rows = client.get("/api/paper/decisions", params={"action": "no_trade", "limit": 5}).json()
     assert rows and all("no trade" in d["reason"] for d in rows)
+
+
+def test_dashboard_analytics_logs_and_diagnostics(client: TestClient, services) -> None:
+    seed(services)
+    empty = client.get("/api/dashboard").json()
+    assert empty["bot"]["status"] == "idle" and empty["portfolio"] is None and "simulated" in empty["notice"]
+    services.paper.autostart = False
+    client.post("/api/paper/start", json={"data_mode": "replay", "strategy_mode": "forward_test",
+                                          "strategy": "momentum_breakout", "pairs": ["BTC/USDT"], "timeframe": "15m"})
+    for _ in range(3000):
+        if not services.paper.tick():
+            break
+    dash = client.get("/api/dashboard").json()
+    assert dash["portfolio"]["equity"] > 0 and dash["returns"]["basis"] == "replay clock"
+    assert dash["active_strategies"]["BTC/USDT"]["strategy"] == "momentum_breakout"
+    assert dash["performance"]["trades"] == len(client.get("/api/portfolio/trades").json())
+    a = client.get("/api/analytics").json()
+    assert a["source"] == "paper" and a["equity"] and "monthly_returns" in a and a["drawdown"]
+    runs = client.get("/api/analytics/runs").json()
+    assert runs and runs[0]["source"] == "paper"
+    filtered = client.get("/api/analytics", params={"regime": "range"}).json()
+    assert filtered["equity_note"]
+    logs = client.get("/api/logs", params={"level": "INFO"}).json()
+    assert logs["rows"] and all(r["level"] in {"INFO", "WARNING", "ERROR", "CRITICAL"} for r in logs["rows"])
+    diag = client.get("/api/diagnostics").json()
+    assert diag["databases"]["state"]["integrity"] == "ok"
+    assert diag["safety"]["real_money_execution"] == "not implemented"

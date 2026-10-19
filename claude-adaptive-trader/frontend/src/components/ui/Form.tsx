@@ -1,20 +1,33 @@
-import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import { cloneElement, isValidElement, useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
 import { cn } from "../../lib/cn";
 
-export function Field({ label, hint, error, children, className }: {
+export function Field({ label, hint, error, children, className, group }: {
   label: ReactNode;
   hint?: ReactNode;
   error?: string | null;
   children: ReactNode;
   className?: string;
+  group?: boolean;
 }) {
-  return (
-    <label className={cn("block min-w-0", className)}>
-      <span className="mb-1 block text-xs font-medium text-muted">{label}</span>
-      {children}
+  const id = useId();
+  // The control is named by the label text only (not by its own options or value).
+  const control = !group && isValidElement<{ "aria-labelledby"?: string }>(children) ? cloneElement(children, { "aria-labelledby": id }) : children;
+  const body = (
+    <>
+      <span id={id} className="mb-1 block text-xs font-medium text-muted">{label}</span>
+      {control}
       {error ? <span className="mt-1 block text-xs text-down">{error}</span> : hint ? <span className="mt-1 block text-[11px] leading-4 text-faint">{hint}</span> : null}
-    </label>
+    </>
   );
+  // A <label> names only its first control, so a set of buttons is a labelled group instead.
+  if (group) {
+    return (
+      <div role="group" aria-labelledby={id} className={cn("block min-w-0", className)}>
+        {body}
+      </div>
+    );
+  }
+  return <label className={cn("block min-w-0", className)}>{body}</label>;
 }
 
 const control = "h-9 w-full rounded-lg border border-border-strong bg-surface-2 px-2.5 text-[13px] text-text placeholder:text-faint focus:border-accent focus:outline-none disabled:opacity-50";

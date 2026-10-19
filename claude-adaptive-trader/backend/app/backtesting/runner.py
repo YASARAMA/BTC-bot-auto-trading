@@ -224,7 +224,7 @@ class ResearchRunner:
         sections: dict[str, Any] = {}
         sections[summary_title] = metrics_table(m)
         stress_rows = ["| Cost multiple | Trades | Net return | Expectancy (R) | Profit factor |", "|---|---:|---:|---:|---:|"]
-        for name, sc in scenarios.items():
+        for sc in scenarios.values():
             sm = sc["metrics"]
             stress_rows.append(f"| {sc['multiplier']:g}x | {sm['trades']} | {sm['net_return_pct']}% | {sm['expectancy_r']} |"
                                f" {sm['profit_factor']} |")

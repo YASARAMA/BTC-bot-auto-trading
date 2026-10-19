@@ -206,7 +206,7 @@ class RegimeConfig(Strict):
     rank_window: int = Field(500, ge=50)
     trend_adx_min: float = Field(22.0, gt=0)
     range_adx_max: float = Field(18.0, gt=0)
-    trend_slope_min_atr: float = Field(1.0, gt=0)
+    trend_slope_min_atr: float = Field(0.6, gt=0)
     range_slope_max_atr: float = Field(0.6, gt=0)
     squeeze_percentile: float = Field(25.0, ge=0, le=100)
     expansion_percentile: float = Field(75.0, ge=0, le=100)
