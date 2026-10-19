@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings, load_settings
 from app.main import create_app
 from app.services import Services
+from tests.fakes import FakeExchange
 
 REPO_CONFIG = Path(__file__).resolve().parents[2] / "config.yaml"
 
@@ -33,8 +34,14 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def services(settings: Settings) -> Iterator[Services]:
-    svc = Services(settings, start_background=False, console_logs=False)
+def fake_exchange() -> FakeExchange:
+    return FakeExchange()
+
+
+@pytest.fixture
+def services(settings: Settings, fake_exchange: FakeExchange) -> Iterator[Services]:
+    # Tests never touch the network: the Binance client talks to a fake exchange.
+    svc = Services(settings, start_background=False, console_logs=False, exchange=fake_exchange)
     yield svc
 
 

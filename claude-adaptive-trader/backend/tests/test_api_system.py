@@ -9,8 +9,10 @@ def test_health_reports_components(client: TestClient) -> None:
     r = client.get("/api/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] in {"ok", "degraded"}
+    assert body["status"] in {"ok", "degraded", "error"}
     assert body["components"]["database"]["status"] == "ok"
+    # No candles stored and no feed running: market data must not claim to be healthy.
+    assert body["components"]["market_data"]["status"] == "error"
     assert body["critical_error"] is None
 
 
