@@ -1,0 +1,32 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime state: portfolio, experiments, logs and the candle cache are local.
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.sqlite-journal
+data/imports/*
+!data/imports/.gitkeep
+
+# Generated research reports (curated copies live in docs/)
+reports/*
+!reports/.gitkeep
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/*.tsbuildinfo
+
+# Secrets never belong in the repository
+.env
+.env.*
+!.env.example

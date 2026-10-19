@@ -1,11 +1,12 @@
 # Claude Adaptive Trader - research configuration.
 # Everything here is a research assumption, not a promise. Nothing in this file can
 # enable real-money trading: that code path does not exist in this version.
+# Values you change in the Settings page are stored as overrides in the database and
+# validated against the same rules (and the hard limits in backend/app/core/limits.py).
 
 app:
   name: Claude Adaptive Trader
   mode: paper            # paper | backtest. "live" is not implemented and is rejected.
-  timezone_note: all timestamps are stored in UTC and converted for display only
 
 exchange:
   id: binance
@@ -17,16 +18,24 @@ exchange:
   confirm_timeframes: [1h, 4h]
   timeframes: [1m, 5m, 15m, 1h, 4h, 1d]
   rate_limit_ms: 1200
+  request_timeout_ms: 15000
   stale_after_seconds: 180      # data older than this is shown as stale and blocks entries
   history_days: 400
+  websocket_enabled: true
+  websocket_url: wss://stream.binance.com:9443/stream
+  ticker_poll_seconds: 10       # REST fallback when the WebSocket is not connected
+  candle_poll_seconds: 30
   # Public market data only. No key is read, requested or stored anywhere in this project.
 
 costs:
   # Initial research assumptions, NOT a verified Binance fee quote. Verify before trusting.
   fee_pct_per_side: 0.10
   slippage_pct_per_side: 0.05
-  spread_pct: 0.02
+  spread_pct: 0.02              # full spread; half of it is paid on each market fill
   stress_multipliers: [1.0, 2.0, 3.0]
+  take_profit_trade_through_pct: 0.02   # a limit only fills if price trades this far through it
+  max_participation_pct: 5.0    # a fill may not exceed this share of the candle's volume
+  market_impact: true           # square-root impact on top of slippage, scaled by the candle's ATR
 
 portfolio:
   initial_cash: 10000.0
@@ -34,14 +43,22 @@ portfolio:
 
 risk:
   risk_per_trade_pct: 0.25        # of equity, default
-  max_risk_per_trade_pct: 0.50    # hard ceiling
-  max_open_risk_pct: 1.0          # aggregate open risk
-  max_position_pct: 20.0          # notional cap per position
+  max_risk_per_trade_pct: 0.50    # ceiling for any single trade
+  max_open_risk_pct: 1.0          # aggregate open risk across positions
+  max_position_pct: 20.0          # notional cap per position, % of equity
+  max_total_exposure_pct: 60.0    # notional cap across all positions
   max_positions: 3
-  max_correlated_positions: 2     # BTC and ETH move together; this caps that
+  max_correlated_positions: 2     # BTC, ETH and SOL move together; this caps that
+  correlation_groups:
+    - [BTC/USDT, ETH/USDT, SOL/USDT]
   daily_loss_limit_pct: 1.0
   max_drawdown_pct: 5.0
   min_order_notional: 10.0
+  min_stop_distance_pct: 0.15     # a stop closer than this is noise, not risk control
+  max_stop_distance_pct: 8.0
+  max_cost_to_reward: 0.35        # expected round-trip cost / expected reward
+  max_spread_pct: 0.10            # live spread above this rejects the entry
+  liquidity_max_volume_pct: 2.0   # order notional <= this share of the average candle volume
   leverage_enabled: false         # must stay false
   shorting_enabled: false         # must stay false
   kill_switch: false
@@ -52,19 +69,36 @@ regime:
   ema_slow: 200
   atr_period: 14
   adx_period: 14
+  rsi_period: 14
+  bollinger_period: 20
+  bollinger_std: 2.0
+  volume_period: 20
+  range_period: 20
+  rank_window: 500               # candles used for volatility percentiles
   trend_adx_min: 22.0
   range_adx_max: 18.0
-  squeeze_atr_percentile: 25.0    # below this = compressed volatility
-  expansion_atr_percentile: 75.0
+  trend_slope_min_atr: 1.0       # EMA-mid change over slope_lookback, in ATR units
+  range_slope_max_atr: 0.6
+  squeeze_percentile: 25.0       # Bollinger width below this percentile = compressed
+  expansion_percentile: 75.0
+  expansion_range_atr: 1.5       # a candle this many ATR wide counts as expansion
+  shock_range_atr: 4.0           # beyond this the market is outside the validated range
+  shock_percentile: 99.0
+  squeeze_lookback: 20
   slope_lookback: 10
   min_confidence: 0.55
 
 selector:
   min_trades_for_eligibility: 30
   min_profit_factor: 1.20
-  min_expectancy: 0.0
+  min_expectancy_r: 0.0
   max_drawdown_pct: 10.0
+  stress_multiplier: 2.0          # must stay profitable at this cost multiple
   hysteresis_evaluations: 3       # how many evaluations a challenger must lead before it takes over
+  switch_margin: 0.05             # and by how much (score units)
+  recent_trades_window: 20
+  recent_min_trades: 10
+  complexity_penalty: 0.01        # per tunable parameter: simpler wins ties
   allow_no_trade: true
 
 backtest:
@@ -72,15 +106,38 @@ backtest:
   walk_forward_windows: 5
   train_ratio: 0.7
   min_trades_per_window: 5
+  breakers: record                # record | enforce. Research runs record breaker hits and keep going.
+  bootstrap_samples: 2000
+  seed: 42
+  random_baseline_runs: 20
+
+gates:
+  min_trades: 300
+  min_profit_factor: 1.20
+  min_expectancy_r: 0.0
+  stress_multiplier: 2.0
+  min_parameter_stability: 0.6    # share of neighbouring parameter sets that stay profitable
+  min_profitable_environments: 2
+  min_trades_per_environment: 10
+  min_profitable_window_ratio: 0.6
+  max_best_month_share: 0.5       # no single month may carry more than half the profit
+  require_ci_above_zero: true     # bootstrap 95% CI of expectancy must exclude zero
+
+paper:
+  poll_seconds: 5
+  auto_resume: true               # resume a session that was running when the app stopped
+  replay_bars_per_second: 20
 
 research:
   claude_enabled: false           # optional; the platform is fully usable without it
-  model: claude-opus-5
+  model: ""                       # the Anthropic model id to use, from Anthropic's model list
   max_output_tokens: 4000
+  # The API key is read from the ANTHROPIC_API_KEY environment variable only.
 
 storage:
-  database: data/trader.sqlite
-  candles_dir: data/candles
+  database: data/trader.sqlite        # portfolio, experiments, decisions, logs
+  market_database: data/market.sqlite # candle cache; safe to delete, it is downloaded again
+  imports_dir: data/imports           # CSV files to import live here
   reports_dir: reports
 
 server:
