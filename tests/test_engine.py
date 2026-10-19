@@ -435,3 +435,39 @@ def test_without_a_reported_atr_the_old_inference_still_applies(cfg, tmp_path):
     assert engine.position is not None
     # cfg ships atr_stop_mult 2.0, so a 4-wide stop implies an ATR of 2.
     assert engine.position.atr_at_entry == pytest.approx(2.0)
+
+
+def test_a_trade_records_how_far_the_fills_landed_from_the_decision_price(cfg, tmp_path):
+    """Every backtest assumes a slippage number. These are the ones that actually
+    happened, and the gap between them is the honest discount on any backtest."""
+    df = make_ohlcv([100.0] * 6 + [100.0, 100.0], spread=0.0)
+    ts = df["ts"].tolist()
+    strategy = ScriptedStrategy({ts[4]: buy_signal(100.0), ts[6]: Signal(Action.SELL, 1.0, "out")})
+    clock = {"now": ts[0]}
+    store = StateStore(tmp_path / "s.sqlite")
+    exchange = PaperExchange(symbol="BTC/USDT", fee_rate=cfg.exchange.fee_rate, slippage_bps=25.0,
+                             initial_cash=10_000.0, clock=lambda: clock["now"])
+    risk = RiskManager(cfg.risk, fee_rate=cfg.exchange.fee_rate, slippage_bps=25.0)
+    executor = OrderExecutor(exchange, store, symbol="BTC/USDT", strategy_name=strategy.name,
+                             order_timeout_seconds=0.0, order_poll_seconds=0.0, sleep=lambda _s: None,
+                             clock=lambda: clock["now"])
+    engine = TradingEngine(cfg=cfg, strategy=strategy, risk=risk, exchange=exchange, executor=executor,
+                           store=store, notifier=Notifier(cfg.notify), clock=lambda: clock["now"], mode="test")
+    for i in range(7):
+        clock["now"] = ts[i] + TF_MS
+        price = float(df["open"].iloc[i + 1])
+        exchange.set_price(price)
+        engine.process_candle(df.iloc[: i + 1], fill_price=price, exit_at_level=True)
+
+    trades = store.trades()
+    assert trades, "the round trip closed"
+    t = trades[-1]
+    # 25 bps of simulated slippage, and it is positive (worse for the account) on both sides.
+    assert t.entry_slippage_bps == pytest.approx(25.0, abs=0.5)
+    assert t.exit_slippage_bps == pytest.approx(25.0, abs=0.5)
+
+    from bot.reports import execution_quality
+
+    quality = execution_quality(trades)
+    assert quality["fills"] == 2 and quality["avg_bps"] == pytest.approx(25.0, abs=0.5)
+    assert quality["cost"] > 0

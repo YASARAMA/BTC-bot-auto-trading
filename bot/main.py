@@ -60,7 +60,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def build_runtime(cfg: BotConfig, secrets: Secrets, mode: str, replay_csv: str | None = None,
                   replay_start: int | None = None) -> Runtime:
     strategy = get_strategy(cfg.strategy.name, cfg.strategy.params)
-    filters = EntryFilters(**cfg.filters.model_dump())
+    filters = EntryFilters.from_config(cfg.filters)
     needed = max(strategy.warmup, filters.warmup)
     if needed > cfg.exchange.candle_history:
         who = "strategy" if strategy.warmup >= filters.warmup else "entry filters"

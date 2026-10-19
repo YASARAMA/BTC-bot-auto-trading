@@ -59,11 +59,84 @@ def streaks(trades: Sequence[Trade]) -> dict[str, int]:
     return {"longest_winning": best, "longest_losing": abs(worst), "current": current}
 
 
+def execution_quality(trades: Sequence[Trade]) -> dict[str, Any]:
+    """How far real fills landed from the prices the decisions were taken at.
+
+    Every backtest assumes a number for this. These are the ones that actually happened,
+    and the gap between them is the honest discount to apply to any backtest: a strategy
+    that only works at the assumed slippage is not a strategy.
+    """
+    entries = [t.entry_slippage_bps for t in trades]
+    exits = [t.exit_slippage_bps for t in trades]
+    both = entries + exits
+    if not both:
+        return {"fills": 0, "avg_bps": 0.0, "entry_avg_bps": 0.0, "exit_avg_bps": 0.0,
+                "worst_bps": 0.0, "cost_pct_of_pnl": None}
+    gross = sum(abs(t.pnl) for t in trades)
+    # Roughly what the slippage cost, as a share of the money that moved either way.
+    cost = sum(abs(b) / 10_000.0 * t.entry_price * t.qty for t, b in zip(trades, entries))
+    cost += sum(abs(b) / 10_000.0 * t.exit_price * t.qty for t, b in zip(trades, exits))
+    return {
+        "fills": len(both),
+        "avg_bps": round(statistics.fmean(both), 2),
+        "entry_avg_bps": round(statistics.fmean(entries), 2) if entries else 0.0,
+        "exit_avg_bps": round(statistics.fmean(exits), 2) if exits else 0.0,
+        "worst_bps": round(max(both), 2),
+        "cost": round(cost, 2),
+        "cost_pct_of_pnl": round(cost / gross * 100, 1) if gross > 0 else None,
+    }
+
+
+def refused_entries(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """What became of the entries the filters refused.
+
+    A filter that only ever removes winners is a tax, and without this the bot could never
+    tell the difference. Resolved entries only: one still open has not said anything yet.
+    """
+    resolved = [r for r in rows if r.get("status") == "closed" and r.get("pnl_pct") is not None]
+    out: dict[str, Any] = {
+        "refused": len(rows), "resolved": len(resolved), "still_open": len(rows) - len(resolved),
+        "would_have_won": 0, "would_have_lost": 0, "undecided": 0,
+        "avg_pnl_pct": 0.0, "net_pnl_pct": 0.0, "by_reason": {}, "verdict": "",
+    }
+    if not resolved:
+        out["verdict"] = ("Nothing has resolved yet. Give the filters a few weeks before judging them."
+                          if rows else "The filters have not refused an entry yet.")
+        return out
+    wins = [r for r in resolved if float(r["pnl_pct"]) > 0]
+    losses = [r for r in resolved if float(r["pnl_pct"]) < 0]
+    out["would_have_won"] = len(wins)
+    out["would_have_lost"] = len(losses)
+    out["undecided"] = len(resolved) - len(wins) - len(losses)
+    pnls = [float(r["pnl_pct"]) for r in resolved]
+    out["avg_pnl_pct"] = round(statistics.fmean(pnls), 2)
+    out["net_pnl_pct"] = round(sum(pnls), 2)
+
+    groups: dict[str, list[float]] = {}
+    for row in resolved:
+        key = str(row.get("reason") or "").split(";")[0][:60]
+        groups.setdefault(key, []).append(float(row["pnl_pct"]))
+    out["by_reason"] = {
+        k: {"count": len(v), "avg_pnl_pct": round(statistics.fmean(v), 2), "net_pnl_pct": round(sum(v), 2)}
+        for k, v in sorted(groups.items(), key=lambda kv: sum(kv[1]))
+    }
+    net = out["net_pnl_pct"]
+    if net > 0:
+        out["verdict"] = (f"The refused entries would have made {net:+.2f}% between them "
+                          f"({len(wins)} winners, {len(losses)} losers). The filters are costing you money: "
+                          f"loosen the one at the top of the list below.")
+    else:
+        out["verdict"] = (f"The refused entries would have lost {net:+.2f}% between them "
+                          f"({len(wins)} winners, {len(losses)} losers). The filters are earning their place.")
+    return out
+
+
 def analytics(trades: Sequence[Trade], equity: Sequence[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Everything the Analytics tab shows, computed from closed trades."""
     trades = list(trades)
     if not trades:
         return {"trades": 0, "monthly": [], "streaks": streaks([]), "by_exit": {},
+                "execution": execution_quality([]),
                 "durations": {"median_hours": 0.0, "longest_hours": 0.0, "shortest_hours": 0.0},
                 "expectancy": 0.0, "pnl": 0.0, "fees": 0.0, "best": 0.0, "worst": 0.0,
                 "win_rate_pct": 0.0, "avg_win": 0.0, "avg_loss": 0.0,
@@ -99,6 +172,7 @@ def analytics(trades: Sequence[Trade], equity: Sequence[dict[str, Any]] | None =
         "monthly": monthly_table(trades),
         "streaks": streaks(trades),
         "by_exit": by_exit,
+        "execution": execution_quality(trades),
         "first_trade": iso(min(t.entry_ts for t in trades)),
         "last_trade": iso(max(t.exit_ts for t in trades)),
     }
@@ -109,11 +183,13 @@ def trades_csv(trades: Iterable[Trade]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["entry_time", "exit_time", "symbol", "strategy", "qty", "entry_price", "exit_price",
-                     "fees", "pnl", "pnl_pct", "exit_reason", "entry_order_id", "exit_order_id"])
+                     "fees", "pnl", "pnl_pct", "exit_reason", "entry_slippage_bps", "exit_slippage_bps",
+                     "entry_order_id", "exit_order_id"])
     for t in trades:
         writer.writerow([iso(t.entry_ts), iso(t.exit_ts), t.symbol, t.strategy, f"{t.qty:.8f}",
                          f"{t.entry_price:.2f}", f"{t.exit_price:.2f}", f"{t.fees:.4f}", f"{t.pnl:.4f}",
-                         f"{t.pnl_pct:.4f}", t.exit_reason, t.entry_order_id, t.exit_order_id])
+                         f"{t.pnl_pct:.4f}", t.exit_reason, f"{t.entry_slippage_bps:.2f}",
+                         f"{t.exit_slippage_bps:.2f}", t.entry_order_id, t.exit_order_id])
     return buf.getvalue()
 
 

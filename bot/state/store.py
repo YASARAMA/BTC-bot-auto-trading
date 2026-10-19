@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_pct        REAL NOT NULL,
     exit_reason    TEXT NOT NULL,
     entry_order_id TEXT NOT NULL,
-    exit_order_id  TEXT NOT NULL
+    exit_order_id  TEXT NOT NULL,
+    entry_slippage_bps REAL NOT NULL DEFAULT 0,
+    exit_slippage_bps  REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS equity (
     ts           INTEGER PRIMARY KEY,
@@ -56,6 +58,21 @@ CREATE TABLE IF NOT EXISTS equity (
     cash         REAL NOT NULL,
     position_qty REAL NOT NULL,
     price        REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS shadow_entries (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         INTEGER NOT NULL,
+    symbol     TEXT NOT NULL,
+    reason     TEXT NOT NULL,
+    price      REAL NOT NULL,
+    stop_loss  REAL,
+    take_profit REAL,
+    atr        REAL,
+    status     TEXT NOT NULL DEFAULT 'open',
+    outcome    TEXT,
+    exit_ts    INTEGER,
+    exit_price REAL,
+    pnl_pct    REAL
 );
 CREATE TABLE IF NOT EXISTS bot_state (
     key   TEXT PRIMARY KEY,
@@ -105,6 +122,10 @@ class StateStore:
         have = {row["name"] for row in self.conn.execute("PRAGMA table_info(orders)")}
         if "price" not in have:
             self.conn.execute("ALTER TABLE orders ADD COLUMN price REAL")
+        trade_cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(trades)")}
+        for column in ("entry_slippage_bps", "exit_slippage_bps"):
+            if column not in trade_cols:
+                self.conn.execute(f"ALTER TABLE trades ADD COLUMN {column} REAL NOT NULL DEFAULT 0")
 
     def close(self) -> None:
         with self._lock:
@@ -168,13 +189,15 @@ class StateStore:
         return self._write(
             """
             INSERT INTO trades (symbol, strategy, qty, entry_ts, entry_price, exit_ts, exit_price, fees,
-                                pnl, pnl_pct, exit_reason, entry_order_id, exit_order_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                pnl, pnl_pct, exit_reason, entry_order_id, exit_order_id,
+                                entry_slippage_bps, exit_slippage_bps)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.symbol, trade.strategy, trade.qty, trade.entry_ts, trade.entry_price, trade.exit_ts,
                 trade.exit_price, trade.fees, trade.pnl, trade.pnl_pct, trade.exit_reason,
                 trade.entry_order_id, trade.exit_order_id,
+                trade.entry_slippage_bps, trade.exit_slippage_bps,
             ),
         )
 
@@ -186,6 +209,8 @@ class StateStore:
                 entry_price=r["entry_price"], exit_ts=r["exit_ts"], exit_price=r["exit_price"],
                 fees=r["fees"], pnl=r["pnl"], pnl_pct=r["pnl_pct"], exit_reason=r["exit_reason"],
                 entry_order_id=r["entry_order_id"], exit_order_id=r["exit_order_id"],
+                entry_slippage_bps=r["entry_slippage_bps"] if "entry_slippage_bps" in r.keys() else 0.0,
+                exit_slippage_bps=r["exit_slippage_bps"] if "exit_slippage_bps" in r.keys() else 0.0,
             )
             for r in rows
         ]
@@ -200,6 +225,38 @@ class StateStore:
     def equity_curve(self) -> list[dict[str, float]]:
         rows = self._all("SELECT * FROM equity ORDER BY ts")
         return [dict(r) for r in rows]
+
+    # ----- shadow entries (what the filters refused) ----------------------------------
+    def save_shadow(self, *, ts: int, symbol: str, reason: str, price: float,
+                    stop_loss: float | None, take_profit: float | None, atr: float | None) -> int:
+        return self._write(
+            """
+            INSERT INTO shadow_entries (ts, symbol, reason, price, stop_loss, take_profit, atr)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (int(ts), symbol, reason, float(price), stop_loss, take_profit, atr),
+        )
+
+    def open_shadows(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        if symbol:
+            rows = self._all("SELECT * FROM shadow_entries WHERE status = 'open' AND symbol = ? ORDER BY ts",
+                             (symbol,))
+        else:
+            rows = self._all("SELECT * FROM shadow_entries WHERE status = 'open' ORDER BY ts")
+        return [dict(r) for r in rows]
+
+    def close_shadow(self, shadow_id: int, *, outcome: str, exit_ts: int, exit_price: float,
+                     pnl_pct: float) -> None:
+        self._write(
+            """
+            UPDATE shadow_entries SET status = 'closed', outcome = ?, exit_ts = ?, exit_price = ?, pnl_pct = ?
+            WHERE id = ?
+            """,
+            (outcome, int(exit_ts), float(exit_price), float(pnl_pct), int(shadow_id)),
+        )
+
+    def shadows(self, limit: int = 2000) -> list[dict[str, Any]]:
+        return [dict(r) for r in self._all("SELECT * FROM shadow_entries ORDER BY ts DESC LIMIT ?", (limit,))]
 
     # ----- key/value state -----------------------------------------------------------
     def get_state(self, key: str, default: Any = None) -> Any:

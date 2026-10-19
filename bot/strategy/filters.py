@@ -76,6 +76,16 @@ class EntryFilters:
     hours_utc: str = ""               # "" = every hour, "6-22" = a window, "0,1,2" = a list
     skip_weekends: bool = False
 
+    @classmethod
+    def from_config(cls, section: Any) -> "EntryFilters":
+        """Build from the `filters` config section, ignoring keys that are not filters.
+
+        That section also carries settings about what to do with refused entries, which
+        are the engine's business rather than this class's.
+        """
+        data = section if isinstance(section, dict) else section.model_dump()
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
     @property
     def active(self) -> bool:
         return bool(self.htf_factor or self.min_atr_pct or self.max_atr_pct or self.hours_utc

@@ -132,6 +132,6 @@ def test_an_unknown_higher_timeframe_mode_is_rejected():
 
 def test_the_config_builds_the_filters_it_describes():
     cfg = BotConfig(filters=FiltersConfig(htf_factor=4, htf_period=50, min_atr_pct=0.25, hours_utc="6-22"))
-    f = EntryFilters(**cfg.filters.model_dump())
+    f = EntryFilters.from_config(cfg.filters)
     assert f.active and f.htf_factor == 4 and f.min_atr_pct == 0.25
     assert f.describe()["warmup"] == f.warmup

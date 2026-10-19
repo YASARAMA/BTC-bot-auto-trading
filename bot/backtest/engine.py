@@ -18,6 +18,7 @@ from bot.execution.executor import OrderExecutor
 from bot.execution.paper import PaperExchange
 from bot.models import OrderIntent, Side, Trade
 from bot.notify.notifier import Notifier
+from bot.reports import refused_entries
 from bot.risk.manager import RiskManager
 from bot.state.store import StateStore
 from bot.strategy import get_strategy
@@ -35,6 +36,7 @@ class BacktestResult:
     strategy: dict[str, Any]
     config: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)  # anything the run had to change to be possible
+    refused: dict[str, Any] = field(default_factory=dict)  # what the entry filters turned away
 
 
 def run_backtest(
@@ -135,10 +137,14 @@ def run_backtest(
     strategy.clear_precomputed()
     equity = pd.DataFrame(store.equity_curve())
     trades = store.trades()
+    # What the filters refused over this history, and whether refusing it paid. Years of
+    # that answer in one run, instead of waiting weeks for the live bot to produce it.
+    refused = refused_entries(store.shadows(limit=100_000))
     metrics = compute_metrics(equity, trades, tf_ms=tf_ms, initial_cash=cash, first_price=first_price, last_price=last_price)
     store.close()
     return BacktestResult(
         metrics=metrics, trades=trades, equity=equity, strategy=strategy.describe(), notes=notes,
+        refused=refused,
         config={"symbol": symbol, "timeframe": cfg.exchange.timeframe, "fee_rate": cfg.exchange.fee_rate,
                 "slippage_bps": cfg.exchange.slippage_bps, "risk": risk_cfg.model_dump()},
     )

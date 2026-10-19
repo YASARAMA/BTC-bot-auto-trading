@@ -106,6 +106,17 @@ def format_report(result: BacktestResult, show_trades: int) -> str:
                 f"{t.exit_price:>10.2f} {t.pnl:>9.2f} {t.exit_reason}"
             )
         lines.append("-" * 64)
+    refused = result.refused or {}
+    if refused.get("refused"):
+        lines.append("-" * 64)
+        lines.append(f"{'Entries refused by filters':<24}{refused['refused']:>16}")
+        lines.append(f"{'...of those, resolved':<24}{refused['resolved']:>16}")
+        lines.append(f"{'...would have won':<24}{refused['would_have_won']:>16}")
+        lines.append(f"{'...would have lost':<24}{refused['would_have_lost']:>16}")
+        if refused.get("net_pnl_pct") is not None:
+            lines.append(f"{'...net if all were taken':<24}{refused['net_pnl_pct']:>15.2f}%")
+        if refused.get("verdict"):
+            lines.append(f"  {refused['verdict']}")
     for note in result.notes:
         lines.append(f"NOTE      {note}")
     lines.append("Backtest results are hypothetical. Past performance does not predict future returns.")

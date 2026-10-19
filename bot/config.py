@@ -93,6 +93,14 @@ class RiskConfig(StrictModel):
     min_confidence: float = Field(0.5, ge=0.0, le=1.0)
     min_order_notional: float = Field(10.0, ge=0.0)
     kill_switch_file: str = "./data/KILL_SWITCH"
+    # Trading the bot's own equity curve: when its recent performance breaks down, it
+    # takes smaller positions or stops, and comes back on its own when it recovers. Every
+    # strategy has periods where it simply stops working; this is what survives them.
+    equity_curve_ma_candles: int = Field(
+        0, ge=0, description="average the bot's own equity over this many candles; 0 = off")
+    equity_curve_size_pct: float = Field(
+        50.0, ge=0.0, le=100.0,
+        description="size to take while equity is below that average (0 = no entries at all)")
 
 
 class ExitsConfig(StrictModel):
@@ -129,6 +137,10 @@ class FiltersConfig(StrictModel):
     atr_period: int = Field(14, ge=1)
     hours_utc: str = Field("", description="only enter in these UTC hours, e.g. '6-22' or '0,1,2'; empty = always")
     skip_weekends: bool = Field(False, description="no new entries on Saturday or Sunday")
+    track_refused_entries: bool = Field(
+        True, description="follow the entries these filters refuse, to measure whether refusing them paid")
+    refused_entry_candles: int = Field(
+        48, ge=0, description="give a refused entry this many candles to resolve before calling it a draw")
 
 
 class PaperConfig(StrictModel):

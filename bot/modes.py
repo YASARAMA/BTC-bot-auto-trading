@@ -160,8 +160,7 @@ def apply_mode(config: dict[str, Any], mode: str) -> dict[str, Any]:
     # to raise the rolling window with it, or the bot refuses to start.
     from bot.strategy.filters import EntryFilters
 
-    needed = EntryFilters(**{k: v for k, v in out["filters"].items()
-                             if k in EntryFilters.__dataclass_fields__}).warmup
+    needed = EntryFilters.from_config(out["filters"]).warmup
     exchange = {**out.get("exchange", {})}
     if needed and int(exchange.get("candle_history", 0)) < needed:
         exchange["candle_history"] = needed

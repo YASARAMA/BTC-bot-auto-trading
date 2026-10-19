@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -68,7 +69,10 @@ class TradingEngine:
         # middle of a candle being processed. One lock makes each of those whole, so the
         # position and the database can never be half-updated by two threads at once.
         self.lock = threading.RLock()
-        self.filters = EntryFilters(**cfg.filters.model_dump())
+        self.filters = EntryFilters.from_config(cfg.filters)
+        # The bot's own equity curve, for the risk switch that reads it. A deque rather
+        # than a query: this is consulted on every candle.
+        self._equity_history: deque[float] = deque(maxlen=max(1, cfg.risk.equity_curve_ma_candles))
         self.position: Position | None = None
         self.last_candle_ts: int | None = None
         self.unmanaged_base = 0.0
@@ -77,6 +81,12 @@ class TradingEngine:
 
     # ----- state -------------------------------------------------------------------------
     def _load_state(self) -> None:
+        window = self.cfg.risk.equity_curve_ma_candles
+        if window:
+            # A restart must not wipe the equity curve: the switch would read "no history"
+            # and hand out full size exactly when the run before it was going badly.
+            rows = self.store.equity_curve()[-window:]
+            self._equity_history.extend(float(r["equity"]) for r in rows)
         pos = self.store.get_state(KEY_POSITION)
         self.position = Position.from_dict(pos) if pos else None
         self.last_candle_ts = self.store.get_state(KEY_LAST_CANDLE)
@@ -117,7 +127,19 @@ class TradingEngine:
         return AccountSnapshot(
             equity=cash + qty * price, cash=cash, price=price,
             now_ms=now_ms if now_ms is not None else self.now(), position=self.position,
+            equity_ma=self.equity_ma(),
         )
+
+    def equity_ma(self) -> float | None:
+        """The average of the bot's own equity over the configured window.
+
+        None until the window is full: half a window is not an average, and acting on one
+        would cut size for no reason during the first hours of every run.
+        """
+        window = self.cfg.risk.equity_curve_ma_candles
+        if not window or len(self._equity_history) < window:
+            return None
+        return sum(self._equity_history) / len(self._equity_history)
 
     def equity(self, price: float) -> float:
         return self.account(price).equity
@@ -234,6 +256,12 @@ class TradingEngine:
         if exit_summary:
             summary.update(exit_summary)
 
+        # Follow the entries the filters refused: without this the bot can never tell
+        # whether refusing them was right, and "it felt safer" is not a measurement.
+        shadow_summary = self.follow_shadows(high=hi, low=lo, candle_ts=ts, price=price)
+        if shadow_summary:
+            summary["shadow"] = shadow_summary
+
         signal = self.evaluate_strategy(df, ts, price)
         blocked = self.filters.block_reason(df) if signal.action == Action.BUY else None
         if blocked:
@@ -241,6 +269,7 @@ class TradingEngine:
             # filtered, so a position that must close still closes.
             summary["filtered"] = blocked
             self._log("entry_filtered", reason=blocked, candle_ts=ts)
+            self.record_shadow(signal, price=price, candle_ts=ts, reason=blocked)
             signal = Signal.hold(f"entry filtered: {blocked}")
         account = self.account(price, now)
         decision = self.risk.evaluate(signal, account, ts)
@@ -262,6 +291,7 @@ class TradingEngine:
         self.last_candle_ts = ts
         acct = self.account(price, now)
         self.store.save_equity(ts, acct.equity, acct.cash, self.position.qty if self.position else 0.0, price)
+        self._equity_history.append(acct.equity)
         self.persist()
         summary.update(
             equity=round(acct.equity, 2), cash=round(acct.cash, 2),
@@ -269,6 +299,53 @@ class TradingEngine:
             risk=self.risk.status(now, acct.equity),
         )
         return summary
+
+    # ----- shadow entries ----------------------------------------------------------------
+    def record_shadow(self, signal: Signal, *, price: float, candle_ts: int, reason: str) -> None:
+        """Write down an entry the filters refused, so it can be judged later."""
+        if not self.cfg.filters.track_refused_entries:
+            return
+        try:
+            self.store.save_shadow(ts=candle_ts, symbol=self.symbol, reason=reason, price=price,
+                                   stop_loss=signal.stop_loss, take_profit=signal.take_profit,
+                                   atr=signal.atr)
+        except Exception:  # noqa: BLE001 - bookkeeping must never stop trading
+            log.exception("could not record a refused entry")
+
+    def follow_shadows(self, *, high: float, low: float, candle_ts: int, price: float) -> dict[str, Any] | None:
+        """Walk refused entries forward one candle and close the ones that resolved.
+
+        The same pessimistic rule the backtester uses: within one candle the order of the
+        high and the low is unknowable, so a trade that touched both counts as the loss.
+        """
+        if not self.cfg.filters.track_refused_entries:
+            return None
+        try:
+            open_rows = self.store.open_shadows(self.symbol)
+        except Exception:  # noqa: BLE001
+            return None
+        if not open_rows:
+            return None
+        horizon = self.cfg.filters.refused_entry_candles * self.tf_ms
+        closed: dict[str, int] = {}
+        for row in open_rows:
+            entry = float(row["price"])
+            stop, take = row["stop_loss"], row["take_profit"]
+            outcome, exit_price = None, None
+            if stop is not None and low <= float(stop):
+                outcome, exit_price = "loss", float(stop)
+            elif take is not None and high >= float(take):
+                outcome, exit_price = "win", float(take)
+            elif horizon and candle_ts - int(row["ts"]) >= horizon:
+                outcome = "timeout"
+                exit_price = price
+            if outcome is None:
+                continue
+            pnl_pct = (exit_price / entry - 1.0) * 100.0 if entry else 0.0
+            self.store.close_shadow(int(row["id"]), outcome=outcome, exit_ts=candle_ts,
+                                    exit_price=float(exit_price), pnl_pct=pnl_pct)
+            closed[outcome] = closed.get(outcome, 0) + 1
+        return {"resolved": closed} if closed else None
 
     def evaluate_strategy(self, df: pd.DataFrame, candle_ts: int, price: float):
         """Call the strategy, handing it context when its signature accepts one."""
@@ -511,9 +588,21 @@ class TradingEngine:
         return self.position.to_dict()
 
     # ----- fills -------------------------------------------------------------------------
+    @staticmethod
+    def _slippage_bps(side: Side, ref_price: float, fill_price: float) -> float:
+        """How much worse than the decision price this filled, in basis points.
+
+        Positive is always worse for the account, whichever way the order went.
+        """
+        if ref_price <= 0:
+            return 0.0
+        move = (fill_price - ref_price) if side == Side.BUY else (ref_price - fill_price)
+        return round(move / ref_price * 10_000.0, 2)
+
     def _apply_fill(self, order: Order, intent: OrderIntent, now: int, mark_price: float) -> None:
         fill_price = float(order.avg_price or intent.ref_price)
         qty = float(order.filled)
+        slippage = self._slippage_bps(order.side, float(intent.ref_price), fill_price)
         if order.side == Side.BUY:
             if self.position is not None:
                 # Should not happen (risk rejects BUY while long); merge defensively.
@@ -538,6 +627,7 @@ class TradingEngine:
                     stop_loss=intent.stop_loss, take_profit=intent.take_profit,
                     entry_order_id=order.client_order_id, strategy=self.strategy.name, fees_paid=order.fee,
                     atr_at_entry=atr, highest_price=fill_price, initial_stop=intent.stop_loss, initial_qty=qty,
+                    entry_slippage_bps=slippage,
                 )
             self.risk.record_entry(now)
             self._log("position_opened", **self.position.to_dict())
@@ -560,6 +650,7 @@ class TradingEngine:
             exit_ts=order.updated_at or now, exit_price=fill_price, fees=fees, pnl=pnl,
             pnl_pct=(pnl / cost * 100.0) if cost else 0.0, exit_reason=intent.kind,
             entry_order_id=pos.entry_order_id, exit_order_id=order.client_order_id,
+            entry_slippage_bps=pos.entry_slippage_bps, exit_slippage_bps=slippage,
         )
         self.store.save_trade(trade)
         self.trades_closed += 1

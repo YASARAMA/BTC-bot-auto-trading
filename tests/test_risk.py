@@ -202,3 +202,62 @@ def test_the_benchmark_actually_holds_the_market():
     filtered = run_backtest(df, cfg.model_copy(update={"filters": cfg.filters.model_copy(
         update={"htf_factor": 4, "skip_weekends": True})}), strategy_name="buy_hold", params={})
     assert filtered.metrics["total_return_pct"] == pytest.approx(m["total_return_pct"], rel=1e-6)
+
+
+def test_the_equity_curve_switch_cuts_size_when_the_bot_is_losing(tmp_path):
+    """Every strategy has stretches where it stops working. The switch sees that in the
+    bot's own equity before it shows up anywhere else, and takes less risk until it ends."""
+    risk = rm(tmp_path, equity_curve_ma_candles=20, equity_curve_size_pct=50.0, min_seconds_between_trades=0.0)
+
+    healthy = risk.evaluate(buy(), acct(equity=10_000.0, cash=10_000.0), candle_ts=NOW)
+    assert isinstance(healthy, OrderIntent)
+
+    # Same account, but the curve says the recent average was higher: half size.
+    below = AccountSnapshot(equity=10_000.0, cash=10_000.0, price=PRICE, now_ms=NOW + 1, position=None,
+                            equity_ma=11_000.0)
+    reduced = risk.evaluate(buy(), below, candle_ts=NOW + 1)
+    assert isinstance(reduced, OrderIntent)
+    assert reduced.qty == pytest.approx(healthy.qty / 2, rel=1e-6)
+
+    # Above the average again: full size, no memory of the bad patch.
+    above = AccountSnapshot(equity=12_000.0, cash=12_000.0, price=PRICE, now_ms=NOW + 2, position=None,
+                            equity_ma=11_000.0)
+    recovered = risk.evaluate(buy(), above, candle_ts=NOW + 2)
+    assert isinstance(recovered, OrderIntent) and recovered.qty > reduced.qty
+
+
+def test_the_switch_can_stop_entries_entirely(tmp_path):
+    risk = rm(tmp_path, equity_curve_ma_candles=20, equity_curve_size_pct=0.0)
+    below = AccountSnapshot(equity=9_000.0, cash=9_000.0, price=PRICE, now_ms=NOW, position=None,
+                            equity_ma=11_000.0)
+    out = risk.evaluate(buy(), below, candle_ts=NOW)
+    assert isinstance(out, Rejection) and out.code == "equity_curve"
+    assert "until it recovers" in out.reason
+
+
+def test_the_switch_is_silent_until_the_window_is_full(cfg, tmp_path):
+    """Half a window is not an average, and acting on one would cut size for no reason in
+    the first hours of every run."""
+    from bot.engine import TradingEngine
+    from bot.execution.executor import OrderExecutor
+    from bot.execution.paper import PaperExchange
+    from bot.notify.notifier import Notifier
+    from bot.state.store import StateStore
+    from tests.conftest import ScriptedStrategy
+
+    tuned = cfg.model_copy(update={"risk": cfg.risk.model_copy(update={"equity_curve_ma_candles": 5})})
+    store = StateStore(tmp_path / "s.sqlite")
+    exchange = PaperExchange(symbol="BTC/USDT", fee_rate=0.001, slippage_bps=0.0, initial_cash=1000.0,
+                             clock=lambda: NOW)
+    engine = TradingEngine(
+        cfg=tuned, strategy=ScriptedStrategy(), risk=RiskManager(tuned.risk, fee_rate=0.001),
+        exchange=exchange, executor=OrderExecutor(exchange, store, symbol="BTC/USDT", strategy_name="s",
+                                                  order_timeout_seconds=0.0, order_poll_seconds=0.0,
+                                                  sleep=lambda _s: None, clock=lambda: NOW),
+        store=store, notifier=Notifier(tuned.notify), clock=lambda: NOW, mode="test")
+    assert engine.equity_ma() is None
+    for value in (100.0, 101.0, 102.0, 103.0):
+        engine._equity_history.append(value)
+    assert engine.equity_ma() is None, "four of five candles is not an average"
+    engine._equity_history.append(104.0)
+    assert engine.equity_ma() == pytest.approx(102.0)

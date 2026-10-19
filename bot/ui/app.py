@@ -37,7 +37,13 @@ from bot.models import Side
 from bot.modes import MODES, apply_mode, detect_mode, mode_list
 from bot.notify.notifier import Notifier
 from bot.notify.telegram_control import TelegramControl, Watchdog
-from bot.reports import analytics as trade_analytics, daily_summary, equity_csv, trades_csv
+from bot.reports import (
+    analytics as trade_analytics,
+    daily_summary,
+    equity_csv,
+    refused_entries,
+    trades_csv,
+)
 from bot.main import Runtime, build_runtime, run_loop
 from bot.ui.updater import Updater, Version, read_build_info
 
@@ -939,14 +945,18 @@ class BotController:
     # ----- analytics and exports ----------------------------------------------------------------
     def analytics(self) -> dict[str, Any]:
         conn = self._read_conn()
-        trades = []
+        trades, shadows = [], []
         if conn is not None:
             from bot.state.store import StateStore
 
             store = StateStore(self.db_path())
             trades = store.trades()
+            shadows = store.shadows()
             store.close()
-        return trade_analytics(trades, self.equity(limit=100000))
+        out = trade_analytics(trades, self.equity(limit=100000))
+        # What the entry filters refused, and whether refusing it paid.
+        out["refused"] = refused_entries(shadows)
+        return out
 
     def export_csv(self, what: str) -> tuple[str, str]:
         from bot.state.store import StateStore
@@ -1150,7 +1160,7 @@ class BotController:
                 self.backtest = {
                     "state": "done", "params": params, "source": source, "candles": int(len(df)),
                     "metrics": result.metrics, "strategy": result.strategy, "config": result.config,
-                    "notes": list(result.notes),
+                    "notes": list(result.notes), "refused": result.refused,
                     "trades": [t.to_dict() for t in result.trades][-200:],
                     "equity": _downsample(curve, 1500),
                     "report": format_report(result, show_trades=10),

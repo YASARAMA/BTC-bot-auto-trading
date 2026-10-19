@@ -85,7 +85,7 @@ def test_modes_carry_the_entry_filters_and_the_history_they_need():
     base = load_config("config.yaml").printable()
     for mode in MODES:
         cfg = BotConfig.model_validate(apply_mode(base, mode))
-        filters = EntryFilters(**cfg.filters.model_dump())
+        filters = EntryFilters.from_config(cfg.filters)
         assert filters.warmup <= cfg.exchange.candle_history, f"{mode} cannot feed its own filters"
     safe = BotConfig.model_validate(apply_mode(base, "safe"))
     aggressive = BotConfig.model_validate(apply_mode(base, "aggressive"))

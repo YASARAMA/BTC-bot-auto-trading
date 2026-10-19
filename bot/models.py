@@ -67,6 +67,7 @@ class Position:
     initial_stop: float | None = None
     initial_qty: float = 0.0
     partial_done: bool = False
+    entry_slippage_bps: float = 0.0
 
     def notional(self, price: float) -> float:
         return self.qty * price
@@ -159,6 +160,11 @@ class Trade:
     exit_reason: str
     entry_order_id: str
     exit_order_id: str
+    # How much worse than the price the decision was taken at each side actually filled,
+    # in basis points. The backtest assumes a number for this; these are the real ones, and
+    # a strategy that only works at the assumed number is not a strategy.
+    entry_slippage_bps: float = 0.0
+    exit_slippage_bps: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

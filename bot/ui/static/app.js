@@ -1197,6 +1197,11 @@
         ['Best / worst', a.trades ? `${fmt.money(a.best)} / ${fmt.money(a.worst)}` : '—', ''],
         ['Median hold', a.durations && a.durations.median_hours != null ? `${a.durations.median_hours}h` : '—', ''],
         ['Streaks', a.streaks ? `${a.streaks.longest_winning}W / ${a.streaks.longest_losing}L` : '—', ''],
+        // What the fills really cost against the price each decision was taken at. The
+        // backtest assumes a number for this; this is the one that happened.
+        ['Slippage per fill', a.execution && a.execution.fills ? `${a.execution.avg_bps} bps` : '—',
+          a.execution && a.execution.avg_bps > 0 ? 'neg' : ''],
+        ['Slippage cost', a.execution && a.execution.fills ? fmt.money(a.execution.cost) : '—', 'neg'],
       ].map(([l, v, c]) => `<div class="tile"><div class="label">${l}</div><div class="value ${c}" style="font-size:19px">${v}</div></div>`).join('');
       const mb = $('an-monthly').querySelector('tbody');
       mb.innerHTML = (a.monthly || []).length ? a.monthly.map((m) => `<tr><td>${m.month}</td><td class="num">${m.trades}</td>`

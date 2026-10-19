@@ -55,6 +55,7 @@ class AccountSnapshot:
     price: float
     now_ms: int
     position: Position | None = None
+    equity_ma: float | None = None  # the bot's own equity curve, averaged; None until it exists
 
 
 class RiskManager:
@@ -194,9 +195,15 @@ class RiskManager:
         # Fixed-fractional: risk a fixed share of equity between entry and stop. Without a
         # stop there is no distance to divide by, so such an entry is sized by the position
         # cap alone - which is why it has to be asked for explicitly.
-        risk_amount = account.equity * self.cfg.risk_per_trade_pct / 100.0
+        scale, curve_note = self._equity_curve_scale(account)
+        if scale <= 0.0:
+            return Rejection(
+                f"the bot's own equity is below its {self.cfg.equity_curve_ma_candles}-candle average "
+                f"({curve_note}); entries are paused until it recovers",
+                code="equity_curve")
+        risk_amount = account.equity * self.cfg.risk_per_trade_pct / 100.0 * scale
         qty_by_risk = float("inf") if stopless else risk_amount / (price - signal.stop_loss)
-        max_notional = account.equity * self.cfg.max_position_pct / 100.0
+        max_notional = account.equity * self.cfg.max_position_pct / 100.0 * scale
         qty_by_cap = max_notional / price
         affordable = account.cash / (price * (1.0 + self.fee_rate) * (1.0 + self.slippage))
         qty = max(0.0, min(qty_by_risk, qty_by_cap, affordable))
@@ -248,6 +255,19 @@ class RiskManager:
             reason=f"{kind} {level:.2f} hit (range {low:.2f}-{high:.2f})",
             confidence=1.0,
         )
+
+    def _equity_curve_scale(self, account: AccountSnapshot) -> tuple[float, str]:
+        """How much of the normal size to take, judged by the bot's own equity curve.
+
+        A strategy that has stopped working shows it here before it shows it anywhere else.
+        Returns 1.0 (full size) when the switch is off or the curve is healthy.
+        """
+        if not self.cfg.equity_curve_ma_candles or account.equity_ma is None or account.equity_ma <= 0:
+            return 1.0, ""
+        if account.equity >= account.equity_ma:
+            return 1.0, ""
+        note = f"{account.equity:,.2f} vs {account.equity_ma:,.2f}"
+        return self.cfg.equity_curve_size_pct / 100.0, note
 
     def record_entry(self, now_ms: int) -> None:
         self.state.last_entry_ts = now_ms
