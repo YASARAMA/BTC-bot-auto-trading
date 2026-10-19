@@ -16,7 +16,9 @@ from app.data.binance_client import BinancePublicClient
 from app.data.historical_store import CandleStore
 from app.data.live_feed import LiveFeed
 from app.data.market_data import MarketDataService
+from app.backtesting.runner import ResearchRunner
 from app.execution.paper_trader import PaperTrader
+from app.research.experiment_tracker import ExperimentTracker
 from app.monitoring.health import HealthMonitor
 from app.monitoring.logging import configure_logging, get_logger, shutdown_logging
 from app.storage.database import Database
@@ -47,6 +49,10 @@ class Services:
         self.market = MarketDataService(lambda: self.settings, self.candle_store, self.binance, self.bus)
         self.live_feed = LiveFeed(lambda: self.settings, self.market, connect=ws_connect)
         self.health.register("market_data", self._market_probe)
+
+        # Research.
+        self.tracker = ExperimentTracker(self.db)
+        self.research = ResearchRunner(lambda: self.settings, self.db, self.market, self.tracker)
 
         # Paper trading.
         self.paper = PaperTrader(lambda: self.settings, self.db, self.market, self.health, self.bus,

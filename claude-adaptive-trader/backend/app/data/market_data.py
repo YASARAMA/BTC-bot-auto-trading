@@ -171,7 +171,7 @@ class MarketDataService:
         if cached:
             return cached
         rules: MarketRules | None = None
-        if self.client is not None:
+        if self.client is not None and not self.client.recently_failed(window_ms=300_000):
             try:
                 rules = self.client.market_rules(pair)
                 self.store.save_rules(EXCHANGE, pair, rules.to_dict())

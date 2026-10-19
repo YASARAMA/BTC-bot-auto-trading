@@ -52,6 +52,7 @@ class ExchangeUnavailable(TraderError):
 class TestSetLocked(TraderError):
     """Raised whenever something tries to read the frozen test segment without a logged final evaluation."""
 
+    __test__ = False          # not a pytest test class, despite the name
     code = "test_set_locked"
     status_code = 403
 

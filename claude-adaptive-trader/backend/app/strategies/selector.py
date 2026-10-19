@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
-
-import pandas as pd
+from typing import Any, Mapping, Protocol
 
 from app.strategies.base import Strategy
 
@@ -20,7 +18,7 @@ class SelectorChoice:
 
 
 class Selector(Protocol):
-    def choose(self, pair: str, ts: int, regime_row: pd.Series) -> SelectorChoice: ...
+    def choose(self, pair: str, ts: int, regime_row: Mapping[str, Any]) -> SelectorChoice: ...
 
 
 class FixedSelector:
@@ -30,7 +28,7 @@ class FixedSelector:
         self.strategy = strategy
         self.label = label
 
-    def choose(self, pair: str, ts: int, regime_row: pd.Series) -> SelectorChoice:
+    def choose(self, pair: str, ts: int, regime_row: Mapping[str, Any]) -> SelectorChoice:
         regime = str(regime_row["regime"])
         if regime == "uncertain":
             return SelectorChoice(None, f"no trade: regime uncertain ({regime_row['regime_reason']})", False,

@@ -55,6 +55,17 @@ class PairState:
         self.atr = f["atr"].to_numpy(dtype="float64")
         self.avg_volume = f["volume"].shift(1).rolling(20, min_periods=5).mean().to_numpy(dtype="float64")
         self.index = {int(t): i for i, t in enumerate(self.ts)}
+        # Plain arrays for the per-candle loop: pandas row access is far too slow there.
+        r = self.view.regime
+        self.regime = r["regime"].to_numpy(dtype=object)
+        self.regime_conf = r["regime_confidence"].to_numpy(dtype="float64")
+        self.regime_reason = r["regime_reason"].to_numpy(dtype=object)
+        self.regime_dir = r["regime_direction"].to_numpy()
+        self.sig = {name: {col: df[col].to_numpy() for col in df.columns} for name, df in self.signals.items()}
+
+    def regime_row(self, i: int) -> dict[str, Any]:
+        return {"regime": str(self.regime[i]), "regime_confidence": float(self.regime_conf[i]),
+                "regime_reason": str(self.regime_reason[i]), "regime_direction": int(self.regime_dir[i])}
 
     def bar(self, i: int) -> Bar:
         prev_atr = self.atr[i - 1] if i > 0 and not math.isnan(self.atr[i - 1]) else None
@@ -300,9 +311,9 @@ class TradingCore:
         if pos.invalidation is not None and not math.isnan(pos.invalidation) and close < pos.invalidation:
             reason = f"invalidation: close {close:.6g} back below {pos.invalidation:.6g}"
         else:
-            sig = ps.signals.get(pos.strategy)
-            if sig is not None and bool(sig["exit_signal"].iloc[i]):
-                reason = str(sig["exit_reason"].iloc[i]) or "strategy exit signal"
+            sig = ps.sig.get(pos.strategy)
+            if sig is not None and bool(sig["exit_signal"][i]):
+                reason = str(sig["exit_reason"][i]) or "strategy exit signal"
             elif pos.time_stop_bars and pos.bars_held >= pos.time_stop_bars:
                 reason = f"time stop after {pos.bars_held} candles"
         if reason is None:
@@ -317,9 +328,8 @@ class TradingCore:
         self.stats.decisions["exit"] += 1
         self.recorder.decision({"ts": ts + self.step_ms, "signal_ts": ts, "pair": ps.pair, "action": "exit",
                                 "accepted": True, "reason": reason, "strategy": pos.strategy,
-                                "strategy_version": pos.strategy_version,
-                                "regime": str(ps.view.regime["regime"].iloc[i]),
-                                "regime_confidence": float(ps.view.regime["regime_confidence"].iloc[i])})
+                                "strategy_version": pos.strategy_version, "regime": str(ps.regime[i]),
+                                "regime_confidence": float(ps.regime_conf[i])})
 
     def _environment(self, ps: PairState, i: int) -> str:
         if not self.confirm:
@@ -332,9 +342,9 @@ class TradingCore:
 
     def _consider_entry(self, ps: PairState, i: int) -> None:
         ts = int(ps.ts[i])
-        reg = ps.view.regime.iloc[i]
-        base = {"ts": ts + self.step_ms, "signal_ts": ts, "pair": ps.pair, "regime": str(reg["regime"]),
-                "regime_confidence": float(reg["regime_confidence"])}
+        reg = ps.regime_row(i)
+        base = {"ts": ts + self.step_ms, "signal_ts": ts, "pair": ps.pair, "regime": reg["regime"],
+                "regime_confidence": reg["regime_confidence"]}
         choice = self.selector.choose(ps.pair, ts, reg)
         if choice.strategy is None:
             self.stats.decisions["no_trade"] += 1
@@ -343,14 +353,15 @@ class TradingCore:
                                         "scores": choice.scores})
             return
         strat = self.strategies[choice.strategy]
-        sig = ps.signals[choice.strategy].iloc[i]
-        if not bool(sig["entry"]):
+        arrays = ps.sig[choice.strategy]
+        if not bool(arrays["entry"][i]):
             self.stats.decisions["hold"] += 1
             if self.record_holds:
                 self.recorder.decision({**base, "action": "hold", "accepted": False, "strategy": strat.name,
                                         "strategy_version": strat.version,
                                         "reason": f"{strat.name}: entry conditions not met", "scores": choice.scores})
             return
+        sig = ps.signals[choice.strategy].iloc[i]
         close = float(ps.close[i])
         proposal = TradeProposal(
             run_id=self.run_id, pair=ps.pair, side="buy", strategy=strat.name, strategy_version=strat.version,

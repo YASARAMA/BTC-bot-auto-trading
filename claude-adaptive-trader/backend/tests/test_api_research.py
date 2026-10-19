@@ -1,0 +1,73 @@
+"""Research and paper endpoints over HTTP, the way the frontend uses them."""
+from __future__ import annotations
+
+import time
+
+from fastapi.testclient import TestClient
+
+from tests.fakes import synthetic_candles
+
+
+def seed(services) -> None:
+    df = synthetic_candles(4000, "15m", start=1_700_000_000_000, drift=0.0002, vol=0.004, seed=5)
+    services.candle_store.upsert("binance", "BTC/USDT", "15m", df, "test")
+
+
+def wait(client: TestClient, job_id: str, timeout: float = 120.0) -> dict:
+    end = time.time() + timeout
+    while time.time() < end:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return job
+        time.sleep(0.05)
+    raise AssertionError("job did not finish")
+
+
+def test_backtest_job_and_experiment_endpoints(client: TestClient, services) -> None:
+    seed(services)
+    r = client.post("/api/backtests", json={"strategy": "momentum_breakout", "pairs": ["BTC/USDT"],
+                                            "segment": "development"})
+    assert r.status_code == 200, r.text
+    job = wait(client, r.json()["id"])
+    assert job["status"] == "completed", job
+    eid = job["result"]["experiment_id"]
+    exp = client.get(f"/api/experiments/{eid}").json()
+    assert exp["kind"] == "backtest" and "report.md" in exp["files"] and "base" in exp["scenarios"]
+    assert "config_snapshot" not in exp
+    assert client.get(f"/api/experiments/{eid}/report.md").text.startswith("# Experiment")
+    assert client.get(f"/api/experiments/{eid}/files/base_trades.csv").status_code == 200
+    assert client.get(f"/api/experiments/{eid}/files/..%2Fsecret").status_code in {404, 422}
+    eq = client.get(f"/api/experiments/{eid}/equity", params={"scenario": "base"}).json()
+    assert eq["points"] and "benchmark" in eq["points"][0]
+    assert any(e["id"] == eid for e in client.get("/api/experiments").json())
+    ds = client.get("/api/datasets").json()
+    assert ds and ds[0]["segments"]["test"]["start"] > ds[0]["segments"]["validation"]["end"]
+
+
+def test_test_segment_is_not_selectable_over_http(client: TestClient) -> None:
+    r = client.post("/api/backtests", json={"strategy": "momentum_breakout", "segment": "test"})
+    assert r.status_code == 422
+
+
+def test_paper_replay_over_http(client: TestClient, services) -> None:
+    seed(services)
+    services.paper.autostart = False
+    r = client.post("/api/paper/start", json={"data_mode": "replay", "strategy_mode": "forward_test",
+                                              "strategy": "momentum_breakout", "pairs": ["BTC/USDT"],
+                                              "timeframe": "15m", "replay_speed": 5000})
+    assert r.status_code == 200, r.text
+    for _ in range(3000):
+        if not services.paper.tick():
+            break
+    st = client.get("/api/paper/status").json()
+    assert st["label"].startswith("HISTORICAL REPLAY") and st["portfolio"]["equity"] > 0
+    assert client.get("/api/paper/status-lite").json()["status"] == "running"
+    assert isinstance(client.get("/api/portfolio/trades").json(), list)
+    assert client.get("/api/portfolio/equity").json()["points"]
+    assert client.get("/api/risk/status").json()["checks"][0] == "market_data_freshness"
+    ks = client.post("/api/paper/kill-switch", json={"on": True, "reason": "test"}).json()
+    assert ks["on"] is True
+    assert client.get("/api/paper/status-lite").json()["kill_switch"] is True
+    ann = client.get("/api/paper/chart-annotations", params={"pair": "BTC/USDT", "timeframe": "15m"}).json()
+    assert "markers" in ann and "levels" in ann
+    assert client.post("/api/paper/stop").json()["status"] == "stopped"
