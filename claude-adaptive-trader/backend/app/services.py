@@ -18,6 +18,8 @@ from app.data.live_feed import LiveFeed
 from app.data.market_data import MarketDataService
 from app.backtesting.runner import ResearchRunner
 from app.execution.paper_trader import PaperTrader
+from app.research.adaptive import AdaptiveSelector, db_state_store, evidence_from_db
+from app.research.claude_researcher import ClaudeResearcher
 from app.research.experiment_tracker import ExperimentTracker
 from app.monitoring.health import HealthMonitor
 from app.monitoring.logging import configure_logging, get_logger, shutdown_logging
@@ -30,7 +32,8 @@ log = get_logger("services")
 
 class Services:
     def __init__(self, settings: Settings, *, start_background: bool = True, console_logs: bool = True,
-                 exchange: Any | None = None, ws_connect: Any | None = None) -> None:
+                 exchange: Any | None = None, ws_connect: Any | None = None,
+                 claude_client_factory: Any | None = None) -> None:
         self.start_background = start_background
         self.db = Database(settings.database_path, STATE_MIGRATIONS, name="trader")
         self.market_db = Database(settings.market_database_path, MARKET_MIGRATIONS, name="market")
@@ -53,10 +56,12 @@ class Services:
         # Research.
         self.tracker = ExperimentTracker(self.db)
         self.research = ResearchRunner(lambda: self.settings, self.db, self.market, self.tracker)
+        self.researcher = ClaudeResearcher(lambda: self.settings, self.db, self.tracker,
+                                           client_factory=claude_client_factory)
 
         # Paper trading.
         self.paper = PaperTrader(lambda: self.settings, self.db, self.market, self.health, self.bus,
-                                 strategy_params=self.strategy_params, selector_factory=None)
+                                 strategy_params=self.strategy_params, selector_factory=self.adaptive_selector)
         self.health.register("paper_engine", self._paper_probe)
 
     # ----- settings ----------------------------------------------------------------------
@@ -87,6 +92,15 @@ class Services:
         shutdown_logging()
         self.db.close()
         self.market_db.close()
+
+    def adaptive_selector(self, session: dict[str, Any], strategies: dict[str, Any]) -> AdaptiveSelector:
+        """The evidence-based selector for a paper session: approved versions only, state persisted."""
+        approved = self.tracker.approved()
+        evidence = evidence_from_db(self.db, {n: s for n, s in strategies.items() if n in approved}, approved,
+                                    self.settings.selector)
+        load, save = db_state_store(self.db, session["id"])
+        return AdaptiveSelector(evidence, self.settings.selector, require_approved=True, load_state=load,
+                                save_state=save)
 
     def strategy_params(self, name: str) -> dict[str, Any]:
         """Parameters for paper trading: the approved version if there is one, else the defaults."""

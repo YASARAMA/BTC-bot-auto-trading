@@ -71,3 +71,47 @@ def test_paper_replay_over_http(client: TestClient, services) -> None:
     ann = client.get("/api/paper/chart-annotations", params={"pair": "BTC/USDT", "timeframe": "15m"}).json()
     assert "markers" in ann and "levels" in ann
     assert client.post("/api/paper/stop").json()["status"] == "stopped"
+
+
+def test_strategies_selector_and_regimes_endpoints(client: TestClient, services) -> None:
+    seed(services)
+    strategies = client.get("/api/strategies").json()
+    assert {s["name"] for s in strategies} == {"trend_following", "momentum_breakout", "mean_reversion",
+                                               "volatility_breakout"}
+    assert all(s["spec"]["entry_rules"] and s["spec"]["required_regimes"] for s in strategies)
+    v = client.post("/api/strategies/momentum_breakout/versions", json={"params": {"target_r": 3.0}}).json()
+    assert v["status"] == "research" and v["params"]["target_r"] == 3.0
+    bad = client.post("/api/strategies/momentum_breakout/versions", json={"params": {"target_r": -1}})
+    assert bad.status_code == 422
+    refused = client.post(f"/api/strategies/versions/{v['id']}/approve", json={"note": "please"})
+    assert refused.status_code == 409                                   # not validated
+    ok = client.post(f"/api/strategies/versions/{v['id']}/approve", json={"note": "forward test", "override": True})
+    assert ok.json()["status"] == "approved"
+    sel = client.get("/api/selector").json()
+    assert sel["approved"]["momentum_breakout"] == v["version"]
+    reg = client.get("/api/regimes").json()
+    assert reg["pairs"]["BTC/USDT"]["available"] and reg["pairs"]["BTC/USDT"]["regime"]
+    assert reg["pairs"]["ETH/USDT"]["available"] is False
+
+
+def test_research_assistant_endpoints_when_disabled(client: TestClient) -> None:
+    st = client.get("/api/research/status").json()
+    assert st["available"] is False and "cannot place or change orders" in st["limits"]
+    note = client.post("/api/research/notes", json={"title": "idea", "body": "check 4h filter"}).json()
+    assert note["source"] == "user" and note["kind"] == "journal"
+    assert client.get("/api/research/notes").json()[0]["id"] == note["id"]
+
+
+def test_adaptive_paper_mode_abstains_without_approved_strategies(client: TestClient, services) -> None:
+    seed(services)
+    services.paper.autostart = False
+    r = client.post("/api/paper/start", json={"data_mode": "replay", "strategy_mode": "adaptive",
+                                              "pairs": ["BTC/USDT"], "timeframe": "15m"})
+    assert r.status_code == 200, r.text
+    for _ in range(3000):
+        if not services.paper.tick():
+            break
+    st = client.get("/api/paper/status").json()
+    assert st["stats"]["decisions"].get("enter", 0) == 0
+    rows = client.get("/api/paper/decisions", params={"action": "no_trade", "limit": 5}).json()
+    assert rows and all("no trade" in d["reason"] for d in rows)
