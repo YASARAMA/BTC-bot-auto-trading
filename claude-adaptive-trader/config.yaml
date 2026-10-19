@@ -1,0 +1,89 @@
+# Claude Adaptive Trader - research configuration.
+# Everything here is a research assumption, not a promise. Nothing in this file can
+# enable real-money trading: that code path does not exist in this version.
+
+app:
+  name: Claude Adaptive Trader
+  mode: paper            # paper | backtest. "live" is not implemented and is rejected.
+  timezone_note: all timestamps are stored in UTC and converted for display only
+
+exchange:
+  id: binance
+  market_type: spot
+  quote: USDT
+  pairs: [BTC/USDT, ETH/USDT]
+  extra_pairs: [SOL/USDT]
+  signal_timeframe: 15m
+  confirm_timeframes: [1h, 4h]
+  timeframes: [1m, 5m, 15m, 1h, 4h, 1d]
+  rate_limit_ms: 1200
+  stale_after_seconds: 180      # data older than this is shown as stale and blocks entries
+  history_days: 400
+  # Public market data only. No key is read, requested or stored anywhere in this project.
+
+costs:
+  # Initial research assumptions, NOT a verified Binance fee quote. Verify before trusting.
+  fee_pct_per_side: 0.10
+  slippage_pct_per_side: 0.05
+  spread_pct: 0.02
+  stress_multipliers: [1.0, 2.0, 3.0]
+
+portfolio:
+  initial_cash: 10000.0
+  currency: USDT
+
+risk:
+  risk_per_trade_pct: 0.25        # of equity, default
+  max_risk_per_trade_pct: 0.50    # hard ceiling
+  max_open_risk_pct: 1.0          # aggregate open risk
+  max_position_pct: 20.0          # notional cap per position
+  max_positions: 3
+  max_correlated_positions: 2     # BTC and ETH move together; this caps that
+  daily_loss_limit_pct: 1.0
+  max_drawdown_pct: 5.0
+  min_order_notional: 10.0
+  leverage_enabled: false         # must stay false
+  shorting_enabled: false         # must stay false
+  kill_switch: false
+
+regime:
+  ema_fast: 20
+  ema_mid: 50
+  ema_slow: 200
+  atr_period: 14
+  adx_period: 14
+  trend_adx_min: 22.0
+  range_adx_max: 18.0
+  squeeze_atr_percentile: 25.0    # below this = compressed volatility
+  expansion_atr_percentile: 75.0
+  slope_lookback: 10
+  min_confidence: 0.55
+
+selector:
+  min_trades_for_eligibility: 30
+  min_profit_factor: 1.20
+  min_expectancy: 0.0
+  max_drawdown_pct: 10.0
+  hysteresis_evaluations: 3       # how many evaluations a challenger must lead before it takes over
+  allow_no_trade: true
+
+backtest:
+  split: {development: 0.5, validation: 0.25, test: 0.25}   # chronological, test stays frozen
+  walk_forward_windows: 5
+  train_ratio: 0.7
+  min_trades_per_window: 5
+
+research:
+  claude_enabled: false           # optional; the platform is fully usable without it
+  model: claude-opus-5
+  max_output_tokens: 4000
+
+storage:
+  database: data/trader.sqlite
+  candles_dir: data/candles
+  reports_dir: reports
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  cors_origins: [http://localhost:5173, http://127.0.0.1:5173]
